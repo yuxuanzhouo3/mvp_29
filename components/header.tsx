@@ -3,6 +3,8 @@
 import { Mic2, Trash2, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { SettingsDialog, type AppSettings } from "@/components/settings-dialog"
+import { useAuth } from "@/components/auth-provider"
+import { useRouter } from "next/navigation"
 
 type HeaderProps = {
   onClearChat?: () => void
@@ -13,6 +15,9 @@ type HeaderProps = {
 }
 
 export function Header({ onClearChat, messageCount = 0, onSettingsChange, roomId, userCount }: HeaderProps) {
+  const { profile, user, isLoading, signOut } = useAuth()
+  const router = useRouter()
+
   return (
     <header className="border-b border-border bg-card">
       <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
@@ -39,6 +44,23 @@ export function Header({ onClearChat, messageCount = 0, onSettingsChange, roomId
         </div>
 
         <div className="flex items-center gap-2">
+          {!isLoading && user && (
+            <>
+              <div className="hidden sm:block text-xs text-muted-foreground max-w-[220px] truncate">
+                {profile?.display_name || user.email}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={async () => {
+                  await signOut()
+                  router.replace("/login")
+                }}
+              >
+                退出
+              </Button>
+            </>
+          )}
           {messageCount > 0 && onClearChat && (
             <Button variant="ghost" size="sm" onClick={onClearChat} className="gap-2">
               <Trash2 className="w-4 h-4" />

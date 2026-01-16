@@ -21,12 +21,38 @@ export function ChatArea({ messages, speechRate = 0.9, speechVolume = 1.0, autoP
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const lastMessageIdRef = useRef<string | null>(null)
+  const shouldAutoScrollRef = useRef(true)
+  const lastMessage = messages[messages.length - 1]
+  const lastMessageId = lastMessage?.id
+  const lastMessageIsUser = lastMessage?.isUser === true
 
   useEffect(() => {
+    const root = scrollAreaRef.current
+    if (!root) return
+    const viewport = root.querySelector<HTMLDivElement>('[data-slot="scroll-area-viewport"]')
+    if (!viewport) return
+
+    const update = () => {
+      const distanceToBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+      shouldAutoScrollRef.current = distanceToBottom < 24
+    }
+
+    update()
+    viewport.addEventListener("scroll", update, { passive: true })
+    return () => viewport.removeEventListener("scroll", update)
+  }, [])
+
+  useEffect(() => {
+    if (!shouldAutoScrollRef.current && !lastMessageIsUser) return
+
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: "smooth" })
     }
+<<<<<<< Updated upstream
   }, [messages])
+=======
+  }, [lastMessageId, lastMessageIsUser, liveCaption?.originalText, liveCaption?.translatedText])
+>>>>>>> Stashed changes
 
   useEffect(() => {
     if (autoPlay && messages.length > 0) {
