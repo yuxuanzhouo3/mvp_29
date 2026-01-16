@@ -114,8 +114,45 @@ export function AdSlot({ slotKey, className, variant = "inline", limit = 1, fetc
     return Array.from({ length: resolvedVisibleCount }, (_, idx) => ads[(startIndex + idx) % ads.length])
   }, [ads, limit, startIndex])
 
-  if (isLoading && visibleAds.length === 0) return null
-  if (visibleAds.length === 0) return null
+  const resolvedVisibleCount = Math.max(1, Math.min(6, Number.isFinite(limit) ? Math.floor(limit) : 1))
+
+  const renderPlaceholder = (key: string) => (
+    <div className={cn("group relative w-full overflow-hidden rounded-xl border border-dashed border-border bg-card p-3")}>
+      <div className={cn("flex gap-3 items-center", variant === "sidebar" ? "min-h-16" : "min-h-14")}>
+        <div
+          className={cn(
+            "shrink-0 rounded-lg border border-dashed border-border bg-muted/40",
+            variant === "sidebar" ? "h-14 w-24" : "h-12 w-20",
+          )}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">广告</span>
+            <span className="truncate text-sm font-medium text-muted-foreground">暂无可用广告</span>
+          </div>
+          <div className="mt-1 truncate text-xs text-muted-foreground">{key}</div>
+        </div>
+      </div>
+    </div>
+  )
+
+  if (isLoading && visibleAds.length === 0) {
+    return (
+      <div className={cn("flex flex-col gap-3 opacity-80", className)}>
+        {Array.from({ length: resolvedVisibleCount }, (_, idx) => (
+          <div key={`loading-${idx}`}>{renderPlaceholder("加载中...")}</div>
+        ))}
+      </div>
+    )
+  }
+
+  if (visibleAds.length === 0) {
+    return (
+      <div className={cn("flex flex-col gap-3", className)}>
+        <div>{renderPlaceholder("请在后台添加广告或检查配置")}</div>
+      </div>
+    )
+  }
 
   const renderCard = (ad: Ad) => {
     const content = (

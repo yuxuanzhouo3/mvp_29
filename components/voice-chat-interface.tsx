@@ -369,7 +369,9 @@ export function VoiceChatInterface() {
 
       <div className="flex-1 flex max-w-screen-2xl w-full mx-auto px-4 py-4 gap-4 overflow-hidden min-h-0">
         <div className="hidden lg:flex w-64 flex-shrink-0 flex-col gap-4">
-          <UserList users={users} currentUserId={roomUserId} />
+          <div className="min-h-0 flex-1">
+            <UserList users={users} currentUserId={roomUserId} />
+          </div>
           <AdSlot slotKey="room_sidebar" variant="sidebar" limit={2} fetchLimit={6} rotateMs={7000} />
         </div>
 

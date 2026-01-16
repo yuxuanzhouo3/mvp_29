@@ -22,14 +22,14 @@ type UserListProps = {
 export function UserList({ users, currentUserId }: UserListProps) {
   const { t } = useI18n()
   return (
-    <Card className="h-full">
-      <CardHeader className="pb-3">
+    <Card className="h-full flex flex-col overflow-hidden">
+      <CardHeader className="pb-3 shrink-0">
         <CardTitle className="text-base flex items-center gap-2">
           <Users className="w-4 h-4" />
           {t("users.title", { count: users.length })}
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-3 flex-1 overflow-y-auto min-h-0">
         {users.map((user) => (
           <div key={user.id} className="flex items-start gap-3 p-2 rounded-lg hover:bg-muted/50 transition-colors">
             <Avatar className="w-10 h-10">
