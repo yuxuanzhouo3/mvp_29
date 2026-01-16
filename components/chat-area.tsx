@@ -33,6 +33,8 @@ export function ChatArea({
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const lastMessageIdRef = useRef<string | null>(null)
   const shouldAutoScrollRef = useRef(true)
+  const lastScrollTopRef = useRef(0)
+  const autoScrollLockedRef = useRef(false)
   const lastMessage = messages[messages.length - 1]
   const lastMessageId = lastMessage?.id
   const lastMessageIsUser = lastMessage?.isUser === true
@@ -62,7 +64,15 @@ export function ChatArea({
 
     const update = () => {
       const distanceToBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
-      shouldAutoScrollRef.current = distanceToBottom < 24
+      const goingUp = viewport.scrollTop < lastScrollTopRef.current
+      lastScrollTopRef.current = viewport.scrollTop
+      if (goingUp) {
+        autoScrollLockedRef.current = true
+        shouldAutoScrollRef.current = false
+      } else if (distanceToBottom < 24) {
+        autoScrollLockedRef.current = false
+        shouldAutoScrollRef.current = true
+      }
       const nextShow = viewport.scrollTop > 200
       setShowScrollToTop((prev) => (prev === nextShow ? prev : nextShow))
     }
@@ -81,6 +91,7 @@ export function ChatArea({
   }
 
   useEffect(() => {
+    if (autoScrollLockedRef.current) return
     if (!shouldAutoScrollRef.current && !lastMessageIsUser) return
 
     if (messagesEndRef.current) {

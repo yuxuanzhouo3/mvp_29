@@ -26,6 +26,17 @@ async function parseErrorMessage(response: Response): Promise<string> {
   return data?.error || data?.message || `请求失败（${response.status}）`
 }
 
+async function parseJsonResponse<T>(response: Response): Promise<T> {
+  const text = await response.text()
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    const snippet = text.replace(/\s+/g, " ").slice(0, 120).trim()
+    const extra = snippet ? `，响应开头：${snippet}` : ""
+    throw new Error(`接口返回非 JSON（${response.status}）${extra}`)
+  }
+}
+
 export async function transcribeAudio(audioBlob: Blob, language: string): Promise<string> {
   const formData = new FormData()
   formData.append("audio", audioBlob, "recording.webm")
@@ -39,8 +50,9 @@ export async function transcribeAudio(audioBlob: Blob, language: string): Promis
     })
 
     if (response.ok) {
-      const data = (await response.json()) as { text: string }
-      return data.text
+      const data = await parseJsonResponse<{ text?: unknown }>(response)
+      if (typeof data.text === "string") return data.text
+      throw new Error("接口返回异常：缺少 text 字段")
     }
 
     if (response.status === 429 && attempt < maxAttempts) {
@@ -78,8 +90,9 @@ export async function translateText(
     })
 
     if (response.ok) {
-      const data = (await response.json()) as { translatedText: string }
-      return data.translatedText
+      const data = await parseJsonResponse<{ translatedText?: unknown }>(response)
+      if (typeof data.translatedText === "string") return data.translatedText
+      throw new Error("接口返回异常：缺少 translatedText 字段")
     }
 
     if (response.status === 429 && attempt < maxAttempts) {
