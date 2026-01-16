@@ -4,6 +4,11 @@ import { RoomStore, RoomData, User, Message } from "./types"
 export class SupabaseRoomStore implements RoomStore {
   private supabase: SupabaseClient
 
+  private async touchRoomActivity(roomId: string, atIso: string): Promise<void> {
+    const { error } = await this.supabase.from("rooms").update({ last_activity_at: atIso }).eq("id", roomId)
+    if (error) return
+  }
+
   constructor() {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const supabaseKey =
@@ -70,6 +75,7 @@ export class SupabaseRoomStore implements RoomStore {
       console.error("Supabase send message error:", error)
       throw error
     }
+    await this.touchRoomActivity(roomId, new Date().toISOString())
     return message
   }
 

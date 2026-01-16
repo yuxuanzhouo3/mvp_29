@@ -16,8 +16,8 @@ export function RoomAutoDeleteToggle({ initialEnabled }: { initialEnabled: boole
   return (
     <div className="flex items-center justify-between gap-4 rounded-md border bg-white px-4 py-3">
       <div className="min-w-0">
-        <div className="text-sm font-medium">房间 24h 自动删除</div>
-        <div className="text-xs text-muted-foreground">开启后，超过 24 小时的房间会被自动清理</div>
+        <div className="text-sm font-medium">房间 24h 不活跃自动删除</div>
+        <div className="text-xs text-muted-foreground">开启后，超过 24 小时无聊天消息的房间会被自动清理</div>
       </div>
       <Switch
         checked={enabled}
@@ -38,4 +38,3 @@ export function RoomAutoDeleteToggle({ initialEnabled }: { initialEnabled: boole
     </div>
   )
 }
-

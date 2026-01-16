@@ -5,7 +5,8 @@
 -- 1. Create rooms table
 CREATE TABLE IF NOT EXISTS rooms (
   id TEXT PRIMARY KEY,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  last_activity_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- 2. Create room_users table
@@ -40,6 +41,24 @@ ON CONFLICT (key) DO NOTHING;
 CREATE INDEX IF NOT EXISTS idx_room_users_room_id ON room_users(room_id);
 CREATE INDEX IF NOT EXISTS idx_room_messages_room_id ON room_messages(room_id);
 CREATE INDEX IF NOT EXISTS idx_room_messages_created_at ON room_messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_rooms_last_activity_at ON rooms(last_activity_at);
+
+CREATE OR REPLACE FUNCTION public.touch_room_last_activity()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE public.rooms
+  SET last_activity_at = NEW.created_at
+  WHERE id = NEW.room_id;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_room_message_insert_touch_room ON public.room_messages;
+CREATE TRIGGER on_room_message_insert_touch_room
+AFTER INSERT ON public.room_messages
+FOR EACH ROW EXECUTE PROCEDURE public.touch_room_last_activity();
 
 -- 6. Create profiles table (auth.users + profiles)
 CREATE TABLE IF NOT EXISTS profiles (

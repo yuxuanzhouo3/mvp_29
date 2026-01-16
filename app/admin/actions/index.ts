@@ -118,14 +118,20 @@ export async function createRoom(name: string) {
   try {
     const supabase = getSupabase()
 
-    const { error } = await supabase
-      .from('rooms')
-      .insert({
-        name: name,
-        created_at: new Date().toISOString()
-      })
+    const now = new Date().toISOString()
+    const preferred = await supabase.from("rooms").insert({
+      name: name,
+      created_at: now,
+      last_activity_at: now,
+    })
 
-    if (error) throw error
+    if (preferred.error) {
+      const fallback = await supabase.from("rooms").insert({
+        name: name,
+        created_at: now,
+      })
+      if (fallback.error) throw fallback.error
+    }
 
     revalidatePath('/admin/rooms')
     return { success: true }

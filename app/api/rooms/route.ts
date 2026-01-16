@@ -5,6 +5,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000
 const SETTINGS_KEY = "rooms_auto_delete_after_24h"
+const ROOM_ACTIVITY_COLUMN = "last_activity_at"
 
 type SettingsCache = { value: boolean; fetchedAt: number }
 type CleanupCache = { lastRunAt: number }
@@ -58,22 +59,53 @@ async function maybeCleanupExpiredRooms(supabase: SupabaseClient): Promise<void>
   if (!enabled) return
 
   const cutoff = new Date(now - ROOM_TTL_MS).toISOString()
-  await supabase.from("rooms").delete().lt("created_at", cutoff)
+  const { error } = await supabase
+    .from("rooms")
+    .delete()
+    .or(`and(${ROOM_ACTIVITY_COLUMN}.is.null,created_at.lt.${cutoff}),${ROOM_ACTIVITY_COLUMN}.lt.${cutoff}`)
+  if (error) {
+    await supabase.from("rooms").delete().lt("created_at", cutoff)
+  }
 }
 
 async function cleanupRoomIfExpired(supabase: SupabaseClient, roomId: string): Promise<boolean> {
   const enabled = await getRoomAutoDeleteEnabled(supabase)
   if (!enabled) return false
 
-  const { data, error } = await supabase.from("rooms").select("created_at").eq("id", roomId).maybeSingle()
-  if (error || !data) return false
+  const { data, error } = await supabase
+    .from("rooms")
+    .select(`created_at,${ROOM_ACTIVITY_COLUMN}`)
+    .eq("id", roomId)
+    .maybeSingle()
+  if (error) {
+    const fallback = await supabase.from("rooms").select("created_at").eq("id", roomId).maybeSingle()
+    if (fallback.error || !fallback.data) return false
+    const createdAt = (fallback.data as { created_at?: unknown }).created_at
+    if (typeof createdAt !== "string") return false
+    const createdMs = Date.parse(createdAt)
+    if (!Number.isFinite(createdMs)) return false
+    if (Date.now() - createdMs <= ROOM_TTL_MS) return false
+    await supabase.from("rooms").delete().eq("id", roomId)
+    return true
+  }
+  if (!data) return false
 
   const createdAt = (data as { created_at?: unknown }).created_at
-  if (typeof createdAt !== "string") return false
+  const lastActivityAt = (data as Record<string, unknown>)[ROOM_ACTIVITY_COLUMN]
 
-  const createdMs = Date.parse(createdAt)
-  if (!Number.isFinite(createdMs)) return false
-  if (Date.now() - createdMs <= ROOM_TTL_MS) return false
+  const createdAtStr = typeof createdAt === "string" ? createdAt : null
+  const lastActivityStr = typeof lastActivityAt === "string" ? lastActivityAt : null
+
+  const createdMs = createdAtStr ? Date.parse(createdAtStr) : Number.NaN
+  const lastActivityMs = lastActivityStr ? Date.parse(lastActivityStr) : Number.NaN
+  const effectiveMs = Number.isFinite(lastActivityMs)
+    ? lastActivityMs
+    : Number.isFinite(createdMs)
+      ? createdMs
+      : Number.NaN
+
+  if (!Number.isFinite(effectiveMs)) return false
+  if (Date.now() - effectiveMs <= ROOM_TTL_MS) return false
 
   await supabase.from("rooms").delete().eq("id", roomId)
   return true
@@ -210,6 +242,9 @@ export async function POST(request: NextRequest) {
       }
 
       const savedMessage = await store.sendMessage(roomId.trim(), parsedMessage)
+      if (supabase) {
+        await supabase.from("rooms").update({ [ROOM_ACTIVITY_COLUMN]: new Date().toISOString() }).eq("id", roomId.trim())
+      }
       return NextResponse.json({ success: true, message: savedMessage })
     }
 
