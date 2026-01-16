@@ -26,7 +26,10 @@ export function ChatArea({ messages, speechRate = 0.9, speechVolume = 1.0, autoP
   const lastMessageId = lastMessage?.id
   const lastMessageIsUser = lastMessage?.isUser === true
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 =======
+=======
+>>>>>>> Stashed changes
 
   const getLanguageName = (value: string): string => {
     const byCode = SUPPORTED_LANGUAGES.find((l) => l.code === value)
@@ -67,7 +70,11 @@ export function ChatArea({ messages, speechRate = 0.9, speechVolume = 1.0, autoP
     }
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
   }, [messages])
+=======
+  }, [lastMessageId, lastMessageIsUser, liveCaption?.originalText, liveCaption?.translatedText])
+>>>>>>> Stashed changes
 =======
   }, [lastMessageId, lastMessageIsUser, liveCaption?.originalText, liveCaption?.translatedText])
 >>>>>>> Stashed changes

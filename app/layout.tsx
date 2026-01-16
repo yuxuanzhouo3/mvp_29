@@ -30,6 +30,9 @@ export default function RootLayout({
         <Toaster />
         <SonnerToaster />
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
