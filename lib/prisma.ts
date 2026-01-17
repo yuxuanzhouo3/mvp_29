@@ -1,9 +1,10 @@
-import { PrismaClient } from "@prisma/client"
 import { PrismaMariaDb } from "@prisma/adapter-mariadb"
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
+type PrismaClientLike = import("@prisma/client").PrismaClient
 
-export function getPrisma(): PrismaClient {
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClientLike }
+
+export async function getPrisma(): Promise<PrismaClientLike> {
   if (globalForPrisma.prisma) return globalForPrisma.prisma
 
   const databaseUrl = process.env.DATABASE_URL
@@ -11,6 +12,7 @@ export function getPrisma(): PrismaClient {
     throw new Error("DATABASE_URL is not set")
   }
 
+  const { PrismaClient } = await import("@prisma/client")
   const adapter = new PrismaMariaDb(databaseUrl)
   const prisma = new PrismaClient({ adapter })
 

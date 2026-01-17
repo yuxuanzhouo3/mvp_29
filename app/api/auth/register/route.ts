@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs"
 
 export async function POST(request: NextRequest) {
   try {
-    const prisma = getPrisma()
+    const prisma = await getPrisma()
     const { email, password, name } = await request.json()
 
     if (!email || !password) {

@@ -7,7 +7,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key"
 
 export async function POST(request: NextRequest) {
   try {
-    const prisma = getPrisma()
+    const prisma = await getPrisma()
     const { email, password } = await request.json()
 
     if (!email || !password) {
