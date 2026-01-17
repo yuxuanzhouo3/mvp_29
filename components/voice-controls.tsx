@@ -10,10 +10,16 @@ import { useI18n } from "@/components/i18n-provider"
 type VoiceControlsProps = {
   isProcessing: boolean
   onRecordingComplete: (audioBlob: Blob) => void
+  onRecordingChange?: (isRecording: boolean) => void
   variant?: "stacked" | "inline"
 }
 
-export function VoiceControls({ isProcessing, onRecordingComplete, variant = "stacked" }: VoiceControlsProps) {
+export function VoiceControls({
+  isProcessing,
+  onRecordingComplete,
+  onRecordingChange,
+  variant = "stacked",
+}: VoiceControlsProps) {
   const { isRecording, recordingTime, audioBlob, startRecording, stopRecording } = useAudioRecorder()
   const { t } = useI18n()
   const isPressingRef = useRef(false)
@@ -25,6 +31,10 @@ export function VoiceControls({ isProcessing, onRecordingComplete, variant = "st
       onRecordingComplete(audioBlob)
     }
   }, [audioBlob, isRecording, onRecordingComplete])
+
+  useEffect(() => {
+    onRecordingChange?.(isRecording)
+  }, [isRecording, onRecordingChange])
 
   useEffect(() => {
     if (!isRecording) return

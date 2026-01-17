@@ -26,6 +26,22 @@ export type Language = {
   flag: string
 }
 
+type SpeechRecognitionAlternativeLike = { transcript: string }
+type SpeechRecognitionResultLike = { length: number;[index: number]: SpeechRecognitionAlternativeLike }
+type SpeechRecognitionResultListLike = { length: number;[index: number]: SpeechRecognitionResultLike }
+type SpeechRecognitionEventLike = { results: SpeechRecognitionResultListLike }
+type SpeechRecognitionLike = {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  start: () => void
+  stop: () => void
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null
+  onerror: ((event: unknown) => void) | null
+  onend: (() => void) | null
+}
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
+
 export const SUPPORTED_LANGUAGES: Language[] = [
   { code: "en-US", name: "英语", flag: "🇺🇸" },
   { code: "zh-CN", name: "中文", flag: "🇨🇳" },
@@ -55,10 +71,18 @@ type RoomSettings = { adminUserId: string; joinMode: "public" | "password" } | n
 
 export function VoiceChatInterface() {
   const { profile, user, updateUserMetadata } = useAuth()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [isInRoom, setIsInRoom] = useState(false)
   const [roomId, setRoomId] = useState("")
-  const [anonUserId] = useState(() => `user-${Math.random().toString(36).substring(2, 11)}`)
+  const [anonUserId] = useState(() => {
+    const fallback = `user-${Math.random().toString(36).substring(2, 11)}`
+    if (typeof window === "undefined") return fallback
+    const storageKey = "voicelink_anon_user_id"
+    const existing = window.localStorage.getItem(storageKey)
+    if (existing) return existing
+    window.localStorage.setItem(storageKey, fallback)
+    return fallback
+  })
   const [roomUserId, setRoomUserId] = useState("")
   const [joinedAuthUserId, setJoinedAuthUserId] = useState<string | null>(null)
   const clientInstanceIdRef = useRef("")
@@ -69,6 +93,10 @@ export function VoiceChatInterface() {
 
   const [messages, setMessages] = useState<Message[]>([])
   const [userLanguage, setUserLanguage] = useState<Language>(SUPPORTED_LANGUAGES[0])
+  const [isRecording, setIsRecording] = useState(false)
+  const [liveTranscript, setLiveTranscript] = useState("")
+  const [liveTranslation, setLiveTranslation] = useState("")
+  const [liveSpeechSupported, setLiveSpeechSupported] = useState(true)
   const [isProcessing, setIsProcessing] = useState(false)
   const [settings, setSettings] = useState<AppSettings>({
     darkMode: false,
@@ -79,7 +107,10 @@ export function VoiceChatInterface() {
     platform: "web",
   })
   const { toast } = useToast()
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pollAbortRef = useRef<AbortController | null>(null)
+  const pollInFlightRef = useRef(false)
+  const pollFailureCountRef = useRef(0)
   const translationCacheRef = useRef<Map<string, string>>(new Map())
   const leaveInitiatedRef = useRef(false)
   const [roomSettingsOpen, setRoomSettingsOpen] = useState(false)
@@ -88,6 +119,9 @@ export function VoiceChatInterface() {
   const [roomSettingsSaving, setRoomSettingsSaving] = useState(false)
   const languagePrefsInitKeyRef = useRef<string | null>(null)
   const lastSavedLanguagePrefsRef = useRef<{ userKey: string; source: string } | null>(null)
+  const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const liveTranslateAbortRef = useRef<AbortController | null>(null)
+  const liveTranslateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const resolveLanguageCode = useCallback((value: string): string => {
     const byCode = SUPPORTED_LANGUAGES.find((l) => l.code === value)
@@ -96,6 +130,146 @@ export function VoiceChatInterface() {
     if (byName) return byName.code
     return value
   }, [])
+
+  const uiLocaleToLanguageCode = useCallback((): string => {
+    if (locale === "zh") return "zh-CN"
+    if (locale === "ja") return "ja-JP"
+    return "en-US"
+  }, [locale])
+
+  const primaryOf = useCallback((code: string) => {
+    const raw = typeof code === "string" ? code.trim() : ""
+    const normalized = raw.replaceAll("_", "-")
+    return (normalized.split("-")[0] ?? normalized).toLowerCase()
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (!isInRoom) return
+
+    if (!isRecording) {
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.onresult = null
+          speechRecognitionRef.current.onerror = null
+          speechRecognitionRef.current.onend = null
+          speechRecognitionRef.current.stop()
+        } catch { }
+        speechRecognitionRef.current = null
+      }
+      return
+    }
+
+    const w = window as unknown as {
+      SpeechRecognition?: SpeechRecognitionConstructor
+      webkitSpeechRecognition?: SpeechRecognitionConstructor
+      mozSpeechRecognition?: SpeechRecognitionConstructor
+    }
+    const SpeechRecognition = w.SpeechRecognition ?? w.webkitSpeechRecognition ?? w.mozSpeechRecognition
+    if (!SpeechRecognition) {
+      setLiveSpeechSupported(false)
+      return
+    }
+    setLiveSpeechSupported(true)
+
+    const recognition = new SpeechRecognition()
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.lang = userLanguage.code
+
+    recognition.onresult = (event) => {
+      try {
+        const results = event.results
+        if (!results || typeof results.length !== "number") return
+        let text = ""
+        for (let i = 0; i < results.length; i += 1) {
+          const item = results[i]
+          const alt = item?.[0]
+          const part = typeof alt?.transcript === "string" ? alt.transcript : ""
+          if (part) text += part
+        }
+        const trimmed = text.trim()
+        if (trimmed) setLiveTranscript(trimmed)
+      } catch { }
+    }
+
+    recognition.onerror = () => {
+      setLiveSpeechSupported(false)
+    }
+
+    recognition.onend = () => {
+      if (!isRecording) return
+      try {
+        recognition.start()
+      } catch { }
+    }
+
+    speechRecognitionRef.current = recognition
+    try {
+      recognition.start()
+    } catch {
+      setLiveSpeechSupported(false)
+    }
+
+    return () => {
+      try {
+        recognition.onresult = null
+        recognition.onerror = null
+        recognition.onend = null
+        recognition.stop()
+      } catch { }
+      if (speechRecognitionRef.current === recognition) speechRecognitionRef.current = null
+    }
+  }, [isInRoom, isRecording, userLanguage.code])
+
+  useEffect(() => {
+    if (!isInRoom) return
+    const sourceCode = userLanguage.code
+    const targetCode = uiLocaleToLanguageCode()
+    const sourcePrimary = primaryOf(sourceCode)
+    const targetPrimary = primaryOf(targetCode)
+
+    if (liveTranslateTimerRef.current) {
+      clearTimeout(liveTranslateTimerRef.current)
+      liveTranslateTimerRef.current = null
+    }
+
+    if (!liveTranscript.trim()) {
+      setLiveTranslation("")
+      return
+    }
+
+    if (sourcePrimary === targetPrimary) {
+      setLiveTranslation(liveTranscript)
+      return
+    }
+
+    liveTranslateTimerRef.current = setTimeout(() => {
+      if (liveTranslateAbortRef.current) liveTranslateAbortRef.current.abort()
+      const controller = new AbortController()
+      liveTranslateAbortRef.current = controller
+
+      void translateText(liveTranscript, sourceCode, targetCode, controller.signal)
+        .then((translated) => {
+          if (!controller.signal.aborted) setLiveTranslation(translated)
+        })
+        .catch(() => { })
+        .finally(() => {
+          if (liveTranslateAbortRef.current === controller) liveTranslateAbortRef.current = null
+        })
+    }, 800)
+
+    return () => {
+      if (liveTranslateTimerRef.current) {
+        clearTimeout(liveTranslateTimerRef.current)
+        liveTranslateTimerRef.current = null
+      }
+      if (liveTranslateAbortRef.current) {
+        liveTranslateAbortRef.current.abort()
+        liveTranslateAbortRef.current = null
+      }
+    }
+  }, [isInRoom, liveTranscript, primaryOf, uiLocaleToLanguageCode, userLanguage.code])
 
   useEffect(() => {
     const userKey = user?.id ?? "anon"
@@ -157,7 +331,7 @@ export function VoiceChatInterface() {
     }
 
     const storageKey = "voicelink_client_instance_id"
-    const existing = window.sessionStorage.getItem(storageKey)
+    const existing = window.localStorage.getItem(storageKey)
     if (existing) {
       clientInstanceIdRef.current = existing
       return existing
@@ -167,7 +341,7 @@ export function VoiceChatInterface() {
       typeof window.crypto?.randomUUID === "function"
         ? window.crypto.randomUUID()
         : `ci-${Math.random().toString(36).substring(2, 11)}`
-    window.sessionStorage.setItem(storageKey, created)
+    window.localStorage.setItem(storageKey, created)
     clientInstanceIdRef.current = created
     return created
   }, [])
@@ -183,9 +357,15 @@ export function VoiceChatInterface() {
       setRoomSettings(null)
       leaveInitiatedRef.current = false
       if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
+        clearTimeout(pollIntervalRef.current)
         pollIntervalRef.current = null
       }
+      if (pollAbortRef.current) {
+        pollAbortRef.current.abort()
+        pollAbortRef.current = null
+      }
+      pollInFlightRef.current = false
+      pollFailureCountRef.current = 0
       translationCacheRef.current.clear()
       toast({ title, description })
     },
@@ -195,18 +375,62 @@ export function VoiceChatInterface() {
   useEffect(() => {
     if (!isInRoom || !roomId || !roomUserId) return
     const cache = translationCacheRef.current
+    let cancelled = false
+
+    const clearPolling = () => {
+      if (pollIntervalRef.current) {
+        clearTimeout(pollIntervalRef.current)
+        pollIntervalRef.current = null
+      }
+      if (pollAbortRef.current) {
+        pollAbortRef.current.abort()
+        pollAbortRef.current = null
+      }
+      pollInFlightRef.current = false
+    }
+
+    const schedulePoll = (delayMs: number) => {
+      if (cancelled) return
+      if (pollIntervalRef.current) clearTimeout(pollIntervalRef.current)
+      pollIntervalRef.current = setTimeout(() => {
+        void pollRoom()
+      }, delayMs)
+    }
 
     const pollRoom = async () => {
+      if (cancelled) return
+      if (pollInFlightRef.current) {
+        schedulePoll(2000)
+        return
+      }
+      pollInFlightRef.current = true
+      let shouldSchedule = true
+      let nextDelayMs = 2000
       try {
+        const controller = new AbortController()
+        if (pollAbortRef.current) pollAbortRef.current.abort()
+        pollAbortRef.current = controller
+
         const response = await fetch("/api/rooms", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "poll", roomId }),
+          cache: "no-store",
+          signal: controller.signal,
         })
 
         if (response.status === 410) {
+          shouldSchedule = false
           exitRoom(t("toast.expiredTitle"), t("toast.expiredDesc"))
           return
+        }
+        if (response.status === 404) {
+          shouldSchedule = false
+          exitRoom(t("toast.roomUnavailableTitle"), t("toast.roomUnavailableDesc"))
+          return
+        }
+        if (!response.ok) {
+          throw new Error(`Poll failed with status ${response.status}`)
         }
 
         const data = (await response.json().catch(() => null)) as
@@ -219,7 +443,9 @@ export function VoiceChatInterface() {
             settings?: { adminUserId?: string; joinMode?: "public" | "password" } | null
           }
           | null
-        if (!data?.success || !data.room) return
+        if (!data?.success || !data.room) {
+          throw new Error("Invalid poll response")
+        }
 
         const room = data.room
         const nextSettings =
@@ -229,6 +455,7 @@ export function VoiceChatInterface() {
         if (nextSettings) setRoomSettings(nextSettings)
         setUsers(room.users)
         if (!leaveInitiatedRef.current && !room.users.some((u) => u.id === roomUserId)) {
+          shouldSchedule = false
           exitRoom(t("toast.kickedTitle"), t("toast.kickedDesc"))
           return
         }
@@ -272,22 +499,28 @@ export function VoiceChatInterface() {
         )
 
         setMessages(newMessages)
+        pollFailureCountRef.current = 0
       } catch (error) {
-        console.error("[v0] Poll error:", error)
+        if (cancelled) return
+        if (error instanceof DOMException && error.name === "AbortError") {
+          shouldSchedule = false
+          return
+        }
+        const nextFailures = pollFailureCountRef.current + 1
+        pollFailureCountRef.current = nextFailures
+        const exp = Math.min(4, Math.max(0, nextFailures - 1))
+        nextDelayMs = Math.min(30_000, 2000 * 2 ** exp)
+      } finally {
+        pollInFlightRef.current = false
+        if (shouldSchedule) schedulePoll(nextDelayMs)
       }
     }
 
     void pollRoom()
-    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
-    pollIntervalRef.current = setInterval(() => {
-      void pollRoom()
-    }, 2000)
 
     return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-        pollIntervalRef.current = null
-      }
+      cancelled = true
+      clearPolling()
       cache.clear()
     }
   }, [exitRoom, isInRoom, resolveLanguageCode, roomId, roomUserId, t, userLanguage.code])
@@ -548,6 +781,8 @@ export function VoiceChatInterface() {
         })
       } finally {
         setIsProcessing(false)
+        setLiveTranscript("")
+        setLiveTranslation("")
       }
     },
     [exitRoom, roomId, roomUserId, t, toast, userLanguage.code, userLanguage.name, userName],
@@ -640,7 +875,33 @@ export function VoiceChatInterface() {
             />
 
             <div className="shrink-0 px-3 py-2 border-t border-border bg-background/50">
-              <VoiceControls variant="inline" isProcessing={isProcessing} onRecordingComplete={handleRecordingComplete} />
+              {(isRecording || isProcessing) && (liveTranscript.trim() || !liveSpeechSupported) ? (
+                <div className="mb-2 rounded-lg border bg-background/70 px-3 py-2">
+                  {!liveSpeechSupported ? (
+                    <div className="text-xs text-muted-foreground">{t("voice.liveUnsupported")}</div>
+                  ) : null}
+                  {liveTranscript.trim() ? (
+                    <div className="space-y-2">
+                      <div>
+                        <div className="text-[11px] text-muted-foreground">{t("voice.liveCaptionTitle")}</div>
+                        <div className="text-sm leading-relaxed">{liveTranscript}</div>
+                      </div>
+                      {liveTranslation.trim() ? (
+                        <div>
+                          <div className="text-[11px] text-muted-foreground">{t("voice.liveTranslationTitle")}</div>
+                          <div className="text-sm leading-relaxed">{liveTranslation}</div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              <VoiceControls
+                variant="inline"
+                isProcessing={isProcessing}
+                onRecordingComplete={handleRecordingComplete}
+                onRecordingChange={(next) => setIsRecording(next)}
+              />
             </div>
           </div>
         </div>

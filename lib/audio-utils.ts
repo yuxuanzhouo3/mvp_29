@@ -37,7 +37,88 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
   }
 }
 
+type WhisperAsrResult = { text?: string }
+type WhisperAsrPipeline = (input: Float32Array, options?: Record<string, unknown>) => Promise<WhisperAsrResult>
+
+let whisperPipelinePromise: Promise<WhisperAsrPipeline> | null = null
+
+function getWhisperLanguageHint(value: string): string | undefined {
+  const raw = typeof value === "string" ? value.trim() : ""
+  if (!raw) return undefined
+  const normalized = raw.toLowerCase().replaceAll("_", "-")
+  const primary = normalized.split("-")[0] ?? normalized
+
+  if (primary === "zh") return "chinese"
+  if (primary === "en") return "english"
+  if (primary === "ja") return "japanese"
+  if (primary === "ko") return "korean"
+  if (primary === "fr") return "french"
+  if (primary === "de") return "german"
+  if (primary === "es") return "spanish"
+  if (primary === "pt") return "portuguese"
+
+  return undefined
+}
+
+async function decodeAudioBlobTo16kMonoFloat32(audioBlob: Blob): Promise<Float32Array> {
+  const arrayBuffer = await audioBlob.arrayBuffer()
+  const AudioContextCtor =
+    (globalThis as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext ??
+    (globalThis as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  if (!AudioContextCtor) {
+    throw new Error("AudioContext unavailable")
+  }
+
+  const audioContext = new AudioContextCtor()
+  try {
+    const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0))
+    const targetSampleRate = 16000
+    const offline = new OfflineAudioContext(1, Math.ceil(decoded.duration * targetSampleRate), targetSampleRate)
+    const source = offline.createBufferSource()
+    source.buffer = decoded
+    source.connect(offline.destination)
+    source.start(0)
+    const rendered = await offline.startRendering()
+    return rendered.getChannelData(0)
+  } finally {
+    try {
+      await audioContext.close()
+    } catch {}
+  }
+}
+
+async function getWhisperPipeline(): Promise<WhisperAsrPipeline> {
+  if (whisperPipelinePromise) return whisperPipelinePromise
+
+  whisperPipelinePromise = (async () => {
+    const { pipeline, env } = await import("@xenova/transformers")
+
+    env.allowLocalModels = false
+    env.useBrowserCache = true
+
+    const modelId = process.env.NEXT_PUBLIC_WHISPER_MODEL?.trim() || "Xenova/whisper-tiny"
+    const transcriber = (await pipeline("automatic-speech-recognition", modelId)) as unknown as WhisperAsrPipeline
+    return transcriber
+  })()
+
+  return whisperPipelinePromise
+}
+
 export async function transcribeAudio(audioBlob: Blob, language: string): Promise<string> {
+  if (typeof window !== "undefined") {
+    try {
+      const transcriber = await getWhisperPipeline()
+      const audio = await decodeAudioBlobTo16kMonoFloat32(audioBlob)
+      const hint = getWhisperLanguageHint(language)
+      const output = await transcriber(audio, { ...(hint ? { language: hint } : {}), task: "transcribe" })
+      const text = typeof output?.text === "string" ? output.text.trim() : ""
+      if (text) return text
+      throw new Error("Empty transcription result")
+    } catch {
+      // fall through to server-side transcription if whisper fails
+    }
+  }
+
   const formData = new FormData()
   formData.append("audio", audioBlob, "recording.webm")
   formData.append("language", language)
