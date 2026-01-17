@@ -1,5 +1,3 @@
-import { PrismaMariaDb } from "@prisma/adapter-mariadb"
-
 type PrismaClientLike = import("@prisma/client").PrismaClient
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClientLike }
