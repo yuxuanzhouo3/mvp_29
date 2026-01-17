@@ -5,9 +5,11 @@
   "engines": {
     "node": ">=20.19.0"
   },
+  "packageManager": "npm@10.9.2",
   "scripts": {
     "postinstall": "prisma generate",
-    "build": "prisma generate && next build",
+    "build": "node -v && npm -v && prisma generate && next build",
+    "vercel-build": "node -v && npm -v && prisma generate && next build",
     "dev": "next dev",
     "lint": "next lint",
     "start": "next start"
