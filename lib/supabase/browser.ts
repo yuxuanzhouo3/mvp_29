@@ -22,6 +22,13 @@ export function getSupabaseBrowserClient(): SupabaseClient {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
 
   if (!supabaseUrl || !supabaseKey) {
+    if (typeof window === "undefined") {
+      // 在服务端/构建期间，如果缺少环境变量，返回一个 mock 客户端或 null
+      // 以避免构建失败（特别是静态生成页面时）
+      return createClient("https://placeholder.supabase.co", "placeholder", {
+        auth: { persistSession: false },
+      })
+    }
     throw new Error("Missing Supabase public credentials")
   }
 
