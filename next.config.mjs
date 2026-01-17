@@ -11,6 +11,7 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  serverExternalPackages: ["@prisma/client", "prisma", "@prisma/adapter-mariadb", "mariadb", "bcryptjs"],
   outputFileTracingRoot: configDir,
   images: {
     unoptimized: true,
