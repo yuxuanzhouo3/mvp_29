@@ -888,7 +888,7 @@ export function VoiceChatInterface() {
               </Button>
             </div>
 
-            <div className="shrink-0 px-2 lg:px-3 py-2 border-b border-border">
+            <div className="shrink-0 px-2 lg:px-3 py-2 border-b border-border hidden lg:block">
               <LanguageSelector
                 variant="compact"
                 language={userLanguage}
@@ -905,6 +905,13 @@ export function VoiceChatInterface() {
             />
 
             <div className="shrink-0 px-2 lg:px-3 py-2 border-t border-border bg-background/50">
+              <div className="mb-2 lg:hidden">
+                <LanguageSelector
+                  variant="compact"
+                  language={userLanguage}
+                  onLanguageChange={setUserLanguage}
+                />
+              </div>
               {(isRecording || isProcessing) && (liveTranscript.trim() || !liveSpeechSupported) ? (
                 <div className="mb-2 rounded-lg border bg-background/70 px-3 py-2">
                   {!liveSpeechSupported ? (

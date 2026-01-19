@@ -2,18 +2,6 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 
 let supabaseBrowserClient: SupabaseClient | null = null
 
-function getPerTabStorageKey(): string | undefined {
-  if (typeof window === "undefined") return undefined
-  const tabIdKey = "voicelink_supabase_tab_id"
-  const existing = window.sessionStorage.getItem(tabIdKey)
-  if (existing) return `voicelink_auth_${existing}`
-
-  const created =
-    typeof window.crypto?.randomUUID === "function" ? window.crypto.randomUUID() : Math.random().toString(36).slice(2, 12)
-  window.sessionStorage.setItem(tabIdKey, created)
-  return `voicelink_auth_${created}`
-}
-
 export function getSupabaseBrowserClient(): SupabaseClient {
   if (supabaseBrowserClient) return supabaseBrowserClient
 
@@ -23,8 +11,6 @@ export function getSupabaseBrowserClient(): SupabaseClient {
 
   if (!supabaseUrl || !supabaseKey) {
     if (typeof window === "undefined") {
-      // 在服务端/构建期间，如果缺少环境变量，返回一个 mock 客户端或 null
-      // 以避免构建失败（特别是静态生成页面时）
       return createClient("https://placeholder.supabase.co", "placeholder", {
         auth: { persistSession: false },
       })
@@ -32,15 +18,13 @@ export function getSupabaseBrowserClient(): SupabaseClient {
     throw new Error("Missing Supabase public credentials")
   }
 
-  const storageKey = getPerTabStorageKey()
-
   supabaseBrowserClient = createClient(supabaseUrl, supabaseKey, {
     auth: {
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: true,
-      storage: typeof window !== "undefined" ? window.sessionStorage : undefined,
-      storageKey,
+      storage: typeof window !== "undefined" ? window.localStorage : undefined,
+      storageKey: "voicelink_auth",
     },
   })
 
