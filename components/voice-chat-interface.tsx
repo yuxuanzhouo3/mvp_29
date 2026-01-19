@@ -121,6 +121,7 @@ export function VoiceChatInterface() {
   const [isUsersSheetOpen, setIsUsersSheetOpen] = useState(false)
   const languagePrefsInitKeyRef = useRef<string | null>(null)
   const lastSavedLanguagePrefsRef = useRef<{ userKey: string; source: string } | null>(null)
+  const lastRoomLanguageUpdateRef = useRef<{ roomId: string; userId: string; source: string; target: string } | null>(null)
   const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const liveTranslateAbortRef = useRef<AbortController | null>(null)
   const liveTranslateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -323,6 +324,34 @@ export function VoiceChatInterface() {
       console.error("[v0] Save language prefs failed:", error)
     })
   }, [updateUserMetadata, user, userLanguage.code])
+
+  useEffect(() => {
+    if (!isInRoom || !roomId || !roomUserId) return
+    const source = userLanguage.name
+    const target = userLanguage.name
+    const last = lastRoomLanguageUpdateRef.current
+    if (last && last.roomId === roomId && last.userId === roomUserId && last.source === source && last.target === target) return
+    lastRoomLanguageUpdateRef.current = { roomId, userId: roomUserId, source, target }
+
+    const controller = new AbortController()
+    fetch("/api/rooms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "update_language",
+        roomId,
+        userId: roomUserId,
+        sourceLanguage: source,
+        targetLanguage: target,
+      }),
+      cache: "no-store",
+      signal: controller.signal,
+    }).catch(() => { })
+
+    return () => {
+      controller.abort()
+    }
+  }, [isInRoom, roomId, roomUserId, userLanguage.name])
 
   const ensureClientInstanceId = useCallback(() => {
     if (clientInstanceIdRef.current) return clientInstanceIdRef.current

@@ -516,6 +516,48 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true })
     }
 
+    if (action === "update_language") {
+      if (typeof roomId !== "string" || roomId.trim().length === 0) {
+        return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 })
+      }
+      if (typeof userId !== "string" || userId.trim().length === 0) {
+        return NextResponse.json({ success: false, error: "Invalid userId" }, { status: 400 })
+      }
+      if (typeof sourceLanguage !== "string" || sourceLanguage.trim().length === 0) {
+        return NextResponse.json({ success: false, error: "Invalid sourceLanguage" }, { status: 400 })
+      }
+      if (typeof targetLanguage !== "string" || targetLanguage.trim().length === 0) {
+        return NextResponse.json({ success: false, error: "Invalid targetLanguage" }, { status: 400 })
+      }
+
+      if (supabase) {
+        const expired = await cleanupRoomIfExpired(supabase, roomId.trim())
+        if (expired) {
+          return NextResponse.json({ success: false, error: "Room expired" }, { status: 410 })
+        }
+      }
+
+      const rid = roomId.trim()
+      const uid = userId.trim()
+      const roomData = await store.getRoom(rid)
+      if (!roomData) {
+        return NextResponse.json({ success: false, error: "Room not found" }, { status: 404 })
+      }
+      const existingUser = roomData.users.find((u) => u.id === uid)
+      if (!existingUser) {
+        return NextResponse.json({ success: false, error: "User not found" }, { status: 404 })
+      }
+
+      const nextUser = {
+        ...existingUser,
+        sourceLanguage: sourceLanguage.trim(),
+        targetLanguage: targetLanguage.trim(),
+      }
+
+      await store.joinRoom(rid, nextUser)
+      return NextResponse.json({ success: true })
+    }
+
     if (action === "message") {
       if (typeof roomId !== "string" || roomId.trim().length === 0) {
         return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 })
