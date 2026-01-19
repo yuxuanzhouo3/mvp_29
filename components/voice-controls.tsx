@@ -20,7 +20,7 @@ export function VoiceControls({
   onRecordingChange,
   variant = "stacked",
 }: VoiceControlsProps) {
-  const { isRecording, recordingTime, audioBlob, startRecording, stopRecording } = useAudioRecorder()
+  const { isRecording, recordingTime, audioBlob, startRecording, stopRecording, clearRecording } = useAudioRecorder()
   const { t } = useI18n()
   const isPressingRef = useRef(false)
   const shouldStopAfterStartRef = useRef(false)
@@ -36,8 +36,9 @@ export function VoiceControls({
     if (audioBlob && !isRecording && audioBlob !== lastHandledBlobRef.current) {
       lastHandledBlobRef.current = audioBlob
       onRecordingCompleteRef.current(audioBlob)
+      clearRecording()
     }
-  }, [audioBlob, isRecording])
+  }, [audioBlob, clearRecording, isRecording])
 
   useEffect(() => {
     onRecordingChange?.(isRecording)
