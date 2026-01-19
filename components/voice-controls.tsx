@@ -24,13 +24,20 @@ export function VoiceControls({
   const { t } = useI18n()
   const isPressingRef = useRef(false)
   const shouldStopAfterStartRef = useRef(false)
+  const onRecordingCompleteRef = useRef(onRecordingComplete)
+  const lastHandledBlobRef = useRef<Blob | null>(null)
   const isInline = variant === "inline"
 
   useEffect(() => {
-    if (audioBlob && !isRecording) {
-      onRecordingComplete(audioBlob)
+    onRecordingCompleteRef.current = onRecordingComplete
+  }, [onRecordingComplete])
+
+  useEffect(() => {
+    if (audioBlob && !isRecording && audioBlob !== lastHandledBlobRef.current) {
+      lastHandledBlobRef.current = audioBlob
+      onRecordingCompleteRef.current(audioBlob)
     }
-  }, [audioBlob, isRecording, onRecordingComplete])
+  }, [audioBlob, isRecording])
 
   useEffect(() => {
     onRecordingChange?.(isRecording)
