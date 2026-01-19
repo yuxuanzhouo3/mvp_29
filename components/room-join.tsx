@@ -174,32 +174,31 @@ export function RoomJoin({ onJoin }: RoomJoinProps) {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4 relative">
-      <div className="absolute right-4 top-4 flex items-center gap-2">
-        <Select value={locale} onValueChange={handleLocaleChange} disabled={isSavingLocale}>
-          <SelectTrigger className="w-[110px] h-9">
-            <SelectValue>
-              <span className="flex items-center gap-2">
-                <span>{currentLocale.flag}</span>
-                <span className="hidden sm:inline">{currentLocale.label}</span>
-              </span>
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {UI_LOCALES.map((opt) => (
-              <SelectItem key={opt.value} value={opt.value}>
-                <span className="flex items-center gap-2">
-                  <span>{opt.flag}</span>
-                  <span>{opt.label}</span>
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <SettingsDialog />
-      </div>
-
       <Card className="w-full max-w-lg lg:max-w-xl">
         <CardHeader className="text-center">
+          <div className="flex w-full justify-end gap-2 mb-2">
+            <Select value={locale} onValueChange={handleLocaleChange} disabled={isSavingLocale}>
+              <SelectTrigger className="w-[110px] h-9">
+                <SelectValue>
+                  <span className="flex items-center gap-2">
+                    <span>{currentLocale.flag}</span>
+                    <span className="hidden sm:inline">{currentLocale.label}</span>
+                  </span>
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {UI_LOCALES.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    <span className="flex items-center gap-2">
+                      <span>{opt.flag}</span>
+                      <span>{opt.label}</span>
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <SettingsDialog />
+          </div>
           <div className="w-16 h-16 rounded-2xl bg-primary mx-auto mb-4 flex items-center justify-center">
             <Users className="w-8 h-8 text-primary-foreground" />
           </div>
