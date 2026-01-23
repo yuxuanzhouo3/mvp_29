@@ -1,4 +1,7 @@
 FROM node:20-alpine
+# 安装 libc6-compat 以解决 alpine 环境下 lightningcss/tailwindcss 等原生模块的兼容性问题
+RUN apk add --no-cache libc6-compat
+
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
