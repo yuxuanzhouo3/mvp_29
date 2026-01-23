@@ -5,7 +5,9 @@ FROM node:20-slim
 RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY package*.json ./
+COPY package.json ./
+# 删除本地生成的 package-lock.json，强制在容器内重新解析依赖，
+# 确保 lightningcss 等原生模块下载正确的 Linux 二进制文件
 RUN npm install
 
 # === 构建时环境变量配置 ===
