@@ -11,6 +11,10 @@ RUN npm install
 # Copy source code
 COPY . .
 
+# Set build-time environment variables
+ENV DEPLOY_TARGET=tencent
+ENV DATABASE_URL="mysql://dummy:dummy@localhost:3306/dummy"
+
 # Build the application
 # This includes running adapt-schema.js and prisma generate as defined in package.json
 RUN npm run build
