@@ -1,6 +1,8 @@
-FROM node:20-alpine
-# 安装 libc6-compat 以解决 alpine 环境下 lightningcss/tailwindcss 等原生模块的兼容性问题
-RUN apk add --no-cache libc6-compat
+FROM node:20-slim
+
+# 安装 OpenSSL (Prisma 需要) 和 ca-certificates
+# 切换到 Debian (slim) 基础镜像可以避免 Alpine (musl) 导致的 lightningcss/tailwindcss 兼容性问题
+RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY package*.json ./
