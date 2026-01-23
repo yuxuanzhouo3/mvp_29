@@ -4,6 +4,13 @@ import process from "process"
 export const maxDuration = 30
 export const runtime = "nodejs"
 
+function resolveEnvValue(key: string, tencentKey: string): string | undefined {
+  const env = process.env as Record<string, string | undefined>
+  const target = String(env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+  if (target === "tencent") return env[tencentKey] ?? env[key]
+  return env[key] ?? env[tencentKey]
+}
+
 function getDashScopeErrorMessage(value: unknown): string | null {
   if (typeof value !== "object" || value === null) return null
   const record = value as Record<string, unknown>
@@ -69,12 +76,13 @@ export async function POST(req: Request) {
       return Response.json({ error: "No audio file provided" }, { status: 400 })
     }
 
-    const apiKey = process.env.DASHSCOPE_API_KEY
+    const apiKey = resolveEnvValue("DASHSCOPE_API_KEY", "TENCENT_DASHSCOPE_API_KEY")
     if (!apiKey) {
       return Response.json({ error: "Missing DASHSCOPE_API_KEY" }, { status: 500 })
     }
 
-    const envModel = process.env.DASHSCOPE_ASR_MODEL || "qwen3-asr-flash"
+    const envModel =
+      resolveEnvValue("DASHSCOPE_ASR_MODEL", "TENCENT_DASHSCOPE_ASR_MODEL") || "qwen3-asr-flash"
     const model = envModel.includes("realtime") ? "qwen3-asr-flash" : envModel
 
     const arrayBuffer = await audioFile.arrayBuffer()

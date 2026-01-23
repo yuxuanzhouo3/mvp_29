@@ -1,0 +1,41 @@
+{
+  "envId": "mornspeaker-0gimakjfaa3a7697",
+  "version": "2.0",
+  "framework": {
+    "name": "ai-translate",
+    "plugins": {
+      "next": {
+        "use": "@cloudbase/framework-plugin-container",
+        "inputs": {
+          "serviceName": "ai-translate",
+          "servicePath": "/",
+          "localPath": "./",
+          "uploadType": "package",
+          "containerPort": 3000,
+          "cpu": 0.5,
+          "mem": 1,
+          "minNum": 0,
+          "maxNum": 50,
+          "policyDetails": [
+            {
+              "policyType": "cpu",
+              "policyThreshold": 60
+            }
+          ],
+          "envVariables": {
+            "DEPLOY_TARGET": "tencent",
+            "NEXT_PUBLIC_DEPLOY_TARGET": "tencent",
+            "NEXT_PUBLIC_TENCENT_ENV_ID": "mornspeaker-0gimakjfaa3a7697",
+            "TENCENT_ENV_ID": "mornspeaker-0gimakjfaa3a7697",
+            "DATABASE_URL": "${TENCENT_DATABASE_URL}",
+            "TENCENT_DASHSCOPE_API_KEY": "sk-b67aded7e87d4f1cb06b8db0b3853f35",
+            "TENCENT_DASHSCOPE_TRANSLATE_MODEL": "qwen-plus",
+            "TENCENT_DASHSCOPE_ASR_MODEL": "qwen3-asr-flash",
+            "TENCENT_DASHSCOPE_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+          },
+          "dockerfile": "Dockerfile"
+        }
+      }
+    }
+  }
+}

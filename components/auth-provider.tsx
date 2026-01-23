@@ -85,6 +85,72 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
+    // Domestic/Tencent Environment: Use CloudBase Auth (Anonymous)
+    if (process.env.NEXT_PUBLIC_DEPLOY_TARGET === 'tencent') {
+      const initCloudBaseAuth = async () => {
+        try {
+          const { getCloudBaseAuth } = await import('@/lib/cloudbase-client')
+          const auth = getCloudBaseAuth()
+          
+          const loginState = await auth.getLoginState()
+          let currentUser = loginState ? loginState.user : null
+          
+          if (!currentUser) {
+            await auth.signInAnonymously()
+            currentUser = auth.currentUser
+          }
+
+          if (currentUser) {
+            // Adapt CloudBase user to Supabase-like User structure
+            const adaptedUser: User = {
+              id: currentUser.uid,
+              app_metadata: {},
+              user_metadata: {},
+              aud: 'authenticated',
+              created_at: new Date().toISOString(),
+              email: undefined,
+              phone: undefined,
+              confirmed_at: undefined,
+              last_sign_in_at: undefined,
+              role: undefined,
+              updated_at: undefined,
+              factors: undefined
+            }
+            
+            setUser(adaptedUser)
+            setSession({
+              access_token: 'mock_token_cloudbase',
+              token_type: 'bearer',
+              expires_in: 3600,
+              refresh_token: 'mock_refresh_cloudbase',
+              user: adaptedUser
+            })
+            
+            // Mock profile for guest user
+            setProfile({
+              id: currentUser.uid,
+              email: null,
+              display_name: 'Guest User',
+              avatar_url: null
+            })
+          }
+        } catch (err) {
+          console.error("CloudBase auth error:", err)
+        } finally {
+          setIsLoading(false)
+        }
+      }
+      
+      initCloudBaseAuth()
+      return
+    }
+
+    // If dummy client, skip auth check
+    if (supabase.supabaseUrl === "https://placeholder.supabase.co") {
+      setIsLoading(false)
+      return
+    }
+
     // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)

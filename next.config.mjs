@@ -9,6 +9,7 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   serverExternalPackages: ["@prisma/client", "prisma", "@prisma/adapter-mariadb", "mariadb", "bcryptjs", "@xenova/transformers", "onnxruntime-node", "sharp"],
+  output: "standalone",
   outputFileTracingRoot: configDir,
   images: {
     unoptimized: true,

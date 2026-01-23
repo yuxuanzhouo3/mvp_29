@@ -6,8 +6,11 @@ generator client {
 }
 
 datasource db {
-  provider = "mysql"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
+
+// === Auth & Users ===
 
 model User {
   id        String   @id @default(uuid())
@@ -16,4 +19,63 @@ model User {
   password  String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// 对应 supabase_schema.sql 中的 profiles 表
+// 注意：Supabase 中此表关联 auth.users，但在通用 Postgres 中我们可能将其视为独立的用户资料表
+// 或者与上面的 User 表合并（取决于业务逻辑），暂时保留独立定义以匹配 SQL 结构
+model Profile {
+  id          String   @id @default(uuid()) // UUID
+  email       String?
+  displayName String?  @map("display_name")
+  avatarUrl   String?  @map("avatar_url")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("profiles")
+}
+
+// === App Domain ===
+
+model Room {
+  id             String        @id
+  createdAt      DateTime      @default(now()) @map("created_at")
+  lastActivityAt DateTime      @default(now()) @map("last_activity_at")
+  users          RoomUser[]
+  messages       RoomMessage[]
+
+  @@map("rooms")
+}
+
+model RoomUser {
+  roomId    String   @map("room_id")
+  userId    String   @map("user_id")
+  data      Json? // Stores the full user object (name, languages, avatar, etc.)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, userId])
+  @@map("room_users")
+}
+
+model RoomMessage {
+  id        String   @id @default(uuid()) // UUID
+  roomId    String   @map("room_id")
+  data      Json? // Stores the full message object
+  createdAt DateTime @default(now()) @map("created_at")
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([roomId])
+  @@index([createdAt])
+  @@map("room_messages")
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("app_settings")
 }

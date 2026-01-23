@@ -42,6 +42,11 @@ type WhisperAsrPipeline = (input: Float32Array, options?: Record<string, unknown
 
 let whisperPipelinePromise: Promise<WhisperAsrPipeline> | null = null
 
+function isTencentDeploy(): boolean {
+  const raw = process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? ""
+  return raw.trim().toLowerCase() === "tencent"
+}
+
 function getWhisperLanguageHint(value: string): string | undefined {
   const raw = typeof value === "string" ? value.trim() : ""
   if (!raw) return undefined
@@ -105,7 +110,7 @@ async function getWhisperPipeline(): Promise<WhisperAsrPipeline> {
 }
 
 export async function transcribeAudio(audioBlob: Blob, language: string): Promise<string> {
-  if (typeof window !== "undefined") {
+  if (typeof window !== "undefined" && !isTencentDeploy()) {
     try {
       const transcriber = await getWhisperPipeline()
       const audio = await decodeAudioBlobTo16kMonoFloat32(audioBlob)

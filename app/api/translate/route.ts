@@ -1,5 +1,6 @@
 import { generateText } from "ai"
 import { mistral } from "@ai-sdk/mistral"
+import { openai } from "@ai-sdk/openai"
 
 export const maxDuration = 30
 
@@ -33,6 +34,11 @@ function sanitizeTranslatedText(text: string, targetLabel: string): string {
   if (!cleaned) return cleaned
   if (targetLabel === "Chinese") return sanitizeChineseTranslation(cleaned)
   return cleaned
+}
+
+function resolveEnvValue(primaryKey: string, fallbackKey: string): string | undefined {
+  const env = process.env as Record<string, string | undefined>
+  return env[primaryKey] ?? env[fallbackKey]
 }
 
 function resolveMistralTranslateModelId(value: unknown): string {
@@ -70,10 +76,8 @@ function normalizeLanguageLabel(value: unknown): string {
 
 export async function POST(req: Request) {
   try {
-    const modelId = resolveMistralTranslateModelId(process.env.MISTRAL_TRANSLATE_MODEL ?? "Mistral-7B-Instruct-v0.3")
-    if (!process.env.MISTRAL_API_KEY || !process.env.MISTRAL_API_KEY.trim()) {
-      return Response.json({ error: "Missing Mistral API key" }, { status: 500 })
-    }
+    const deployTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+    const isTencent = deployTarget === "tencent"
     const { text, sourceLanguage, targetLanguage } = await req.json()
 
     if (typeof text !== "string" || text.trim().length === 0) {
@@ -91,12 +95,40 @@ export async function POST(req: Request) {
         ? `Translate the following text from ${sourceLabel} to Simplified Chinese. Output ONLY Simplified Chinese characters. Do NOT include pinyin, romanization, English, notes, explanations, quotes, labels, or parentheses.\n\nText: ${text}`
         : `Translate the following text from ${sourceLabel} to ${targetLabel}. Only return the translated text in the target language, nothing else.\n\nText: ${text}`
 
-    const { text: translatedText } = await generateText({
-      model: mistral(modelId),
-      prompt,
-      maxOutputTokens: 1000,
-      temperature: 0.3,
-    })
+    let modelId = ""
+    let translatedText = ""
+
+    if (isTencent) {
+      const apiKey = resolveEnvValue("TENCENT_DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY")
+      if (!apiKey || !apiKey.trim()) {
+        return Response.json({ error: "Missing DashScope API key" }, { status: 500 })
+      }
+      modelId =
+        resolveEnvValue("TENCENT_DASHSCOPE_TRANSLATE_MODEL", "DASHSCOPE_TRANSLATE_MODEL")?.trim() || "qwen-plus"
+      const baseURL =
+        resolveEnvValue("TENCENT_DASHSCOPE_BASE_URL", "DASHSCOPE_BASE_URL")?.trim() ||
+        "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      const provider = openai({ apiKey, baseURL })
+      const result = await generateText({
+        model: provider(modelId),
+        prompt,
+        maxOutputTokens: 1000,
+        temperature: 0.3,
+      })
+      translatedText = result.text
+    } else {
+      modelId = resolveMistralTranslateModelId(process.env.MISTRAL_TRANSLATE_MODEL ?? "Mistral-7B-Instruct-v0.3")
+      if (!process.env.MISTRAL_API_KEY || !process.env.MISTRAL_API_KEY.trim()) {
+        return Response.json({ error: "Missing Mistral API key" }, { status: 500 })
+      }
+      const result = await generateText({
+        model: mistral(modelId),
+        prompt,
+        maxOutputTokens: 1000,
+        temperature: 0.3,
+      })
+      translatedText = result.text
+    }
 
     const sanitized = sanitizeTranslatedText(translatedText, targetLabel)
     return Response.json(
