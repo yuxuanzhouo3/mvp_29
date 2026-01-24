@@ -29,9 +29,11 @@
             "TENCENT_ENV_ID": "mornspeaker-0gimakjfaa3a7697",
             "DATABASE_URL": "${TENCENT_DATABASE_URL}",
             "TENCENT_DASHSCOPE_API_KEY": "sk-b67aded7e87d4f1cb06b8db0b3853f35",
-            "TENCENT_DASHSCOPE_TRANSLATE_MODEL": "qwen-plus",
             "TENCENT_DASHSCOPE_ASR_MODEL": "qwen3-asr-flash",
-            "TENCENT_DASHSCOPE_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            "TENCENT_DASHSCOPE_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "TENCENT_ZHIPU_API_KEY": "your-api-key",
+            "TENCENT_ZHIPU_TRANSLATE_MODEL": "glm-4.7-flash",
+            "TENCENT_ZHIPU_BASE_URL": "https://open.bigmodel.cn/api/paas/v4"
           },
           "dockerfile": "Dockerfile"
         }

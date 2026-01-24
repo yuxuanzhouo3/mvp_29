@@ -1,6 +1,6 @@
 import { generateText } from "ai"
 import { mistral } from "@ai-sdk/mistral"
-import { openai } from "@ai-sdk/openai"
+import { createOpenAI } from "@ai-sdk/openai"
 
 export const maxDuration = 30
 
@@ -99,23 +99,63 @@ export async function POST(req: Request) {
     let translatedText = ""
 
     if (isTencent) {
-      const apiKey = resolveEnvValue("TENCENT_DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY")
-      if (!apiKey || !apiKey.trim()) {
-        return Response.json({ error: "Missing DashScope API key" }, { status: 500 })
+      const zhipuApiKey = resolveEnvValue("TENCENT_ZHIPU_API_KEY", "ZHIPU_API_KEY")
+      const dashscopeApiKey = resolveEnvValue("TENCENT_DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY")
+
+      if (zhipuApiKey && zhipuApiKey.trim()) {
+        modelId =
+          resolveEnvValue("TENCENT_ZHIPU_TRANSLATE_MODEL", "ZHIPU_TRANSLATE_MODEL")?.trim() || "glm-4.7-flash"
+        const baseURL =
+          resolveEnvValue("TENCENT_ZHIPU_BASE_URL", "ZHIPU_BASE_URL")?.trim() || "https://open.bigmodel.cn/api/paas/v4"
+        const resp = await fetch(`${baseURL}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${zhipuApiKey}`,
+          },
+          body: JSON.stringify({
+            model: modelId,
+            messages: [
+              {
+                role: "user",
+                content: prompt,
+              },
+            ],
+            thinking: { type: "disabled" },
+            temperature: 0.3,
+            max_tokens: 1000,
+          }),
+        })
+        if (!resp.ok) {
+          return Response.json({ error: "Failed to call Zhipu API" }, { status: 500 })
+        }
+        const data = (await resp.json()) as Record<string, unknown>
+        const choices = data.choices as unknown
+        if (Array.isArray(choices) && choices.length > 0) {
+          const msg = choices[0]?.message as Record<string, unknown>
+          const content = typeof msg?.content === "string" ? msg.content : ""
+          const reasoning = typeof msg?.reasoning_content === "string" ? msg.reasoning_content : ""
+          translatedText = content || reasoning
+        } else {
+          translatedText = ""
+        }
+      } else if (dashscopeApiKey && dashscopeApiKey.trim()) {
+        modelId =
+          resolveEnvValue("TENCENT_DASHSCOPE_TRANSLATE_MODEL", "DASHSCOPE_TRANSLATE_MODEL")?.trim() || "qwen-plus"
+        const baseURL =
+          resolveEnvValue("TENCENT_DASHSCOPE_BASE_URL", "DASHSCOPE_BASE_URL")?.trim() ||
+          "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        const provider = createOpenAI({ apiKey: dashscopeApiKey, baseURL })
+        const result = await generateText({
+          model: provider(modelId),
+          prompt,
+          maxOutputTokens: 1000,
+          temperature: 0.3,
+        })
+        translatedText = result.text
+      } else {
+        return Response.json({ error: "Missing Zhipu/DashScope API key" }, { status: 500 })
       }
-      modelId =
-        resolveEnvValue("TENCENT_DASHSCOPE_TRANSLATE_MODEL", "DASHSCOPE_TRANSLATE_MODEL")?.trim() || "qwen-plus"
-      const baseURL =
-        resolveEnvValue("TENCENT_DASHSCOPE_BASE_URL", "DASHSCOPE_BASE_URL")?.trim() ||
-        "https://dashscope.aliyuncs.com/compatible-mode/v1"
-      const provider = openai({ apiKey, baseURL })
-      const result = await generateText({
-        model: provider(modelId),
-        prompt,
-        maxOutputTokens: 1000,
-        temperature: 0.3,
-      })
-      translatedText = result.text
     } else {
       modelId = resolveMistralTranslateModelId(process.env.MISTRAL_TRANSLATE_MODEL ?? "Mistral-7B-Instruct-v0.3")
       if (!process.env.MISTRAL_API_KEY || !process.env.MISTRAL_API_KEY.trim()) {

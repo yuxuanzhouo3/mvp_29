@@ -30,8 +30,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const supabase = useMemo(() => getSupabaseBrowserClient(), [])
+  const isTencent = process.env.NEXT_PUBLIC_DEPLOY_TARGET === 'tencent'
 
   const fetchProfile = useCallback(async (userId: string) => {
+    if (isTencent) return
     try {
       const { data, error } = await supabase
         .from('profiles')
@@ -45,15 +47,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.error('Error fetching profile:', error)
       setProfile(null)
     }
-  }, [supabase])
+  }, [isTencent, supabase])
 
   const refreshProfile = async () => {
+    if (isTencent) return
     if (user) {
       await fetchProfile(user.id)
     }
   }
 
   const updateProfile = async (patch: { display_name?: string; avatar_url?: string | null }) => {
+    if (isTencent) return
     if (!user) return
 
     try {
@@ -72,21 +76,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateUserMetadata = useCallback(
     async (patch: Record<string, unknown>) => {
+      if (isTencent) return
       if (!user) return
       const { data, error } = await supabase.auth.updateUser({ data: patch })
       if (error) throw error
       if (data.user) setUser(data.user)
     },
-    [supabase, user],
+    [isTencent, supabase, user],
   )
 
   const signOut = async () => {
+    if (isTencent) {
+      const { getCloudBaseAuth } = await import('@/lib/cloudbase-client')
+      const auth = getCloudBaseAuth()
+      await auth.signOut()
+      setSession(null)
+      setUser(null)
+      setProfile(null)
+      return
+    }
     await supabase.auth.signOut()
   }
 
   useEffect(() => {
     // Domestic/Tencent Environment: Use CloudBase Auth (Anonymous)
-    if (process.env.NEXT_PUBLIC_DEPLOY_TARGET === 'tencent') {
+    if (isTencent) {
       const initCloudBaseAuth = async () => {
         try {
           const { getCloudBaseAuth } = await import('@/lib/cloudbase-client')
@@ -102,13 +116,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           if (currentUser) {
             // Adapt CloudBase user to Supabase-like User structure
+            const email = (currentUser as { email?: string }).email ?? null
+            const displayName =
+              (currentUser as { nickName?: string }).nickName ??
+              (currentUser as { username?: string }).username ??
+              (email ? email.split("@")[0] : 'Guest User')
             const adaptedUser: User = {
               id: currentUser.uid,
               app_metadata: {},
               user_metadata: {},
               aud: 'authenticated',
               created_at: new Date().toISOString(),
-              email: undefined,
+              email: email ?? undefined,
               phone: undefined,
               confirmed_at: undefined,
               last_sign_in_at: undefined,
@@ -129,8 +148,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             // Mock profile for guest user
             setProfile({
               id: currentUser.uid,
-              email: null,
-              display_name: 'Guest User',
+              email: email ?? null,
+              display_name: displayName,
               avatar_url: null
             })
           }
@@ -176,7 +195,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       subscription.unsubscribe()
     }
-  }, [supabase, fetchProfile])
+  }, [isTencent, supabase, fetchProfile])
 
   return (
     <AuthContext.Provider value={{
