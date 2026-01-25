@@ -1,31 +1,52 @@
-FROM node:20-slim
+FROM node:20-slim AS base
 
-# 安装 OpenSSL (Prisma 需要) 和 ca-certificates
-# 切换到 Debian (slim) 基础镜像可以避免 Alpine (musl) 导致的 lightningcss/tailwindcss 兼容性问题
 RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY package.json ./
-# 删除本地生成的 package-lock.json，强制在容器内重新解析依赖，
-# 确保 lightningcss 等原生模块下载正确的 Linux 二进制文件
-RUN npm install
 
-# === 构建时环境变量配置 ===
-# 云托管控制台配置的环境变量通常只在运行时生效，构建阶段无法获取。
-# 因此我们需要在 Dockerfile 中显式设置这些变量的默认值/占位符，
-# 确保 npm run build (包含 adapt-schema.js 和 prisma generate) 能顺利执行。
+ARG NODE_ENV=production
+ENV NODE_ENV=$NODE_ENV
 
-# 1. 强制指定部署目标为腾讯云，触发 scripts/adapt-schema.js 切换为 MySQL
-ENV DEPLOY_TARGET="tencent"
-ENV NEXT_PUBLIC_DEPLOY_TARGET="tencent"
-
-# 2. 提供一个符合 MySQL 格式的占位符数据库连接串
-# 这仅用于骗过 Prisma 在构建时的格式校验，不会用于实际连接。
-# 运行时，云平台注入的真实 TENCENT_DATABASE_URL 会通过 start:migrate 脚本生效。
-ENV DATABASE_URL="mysql://build_placeholder:pass@localhost:3306/mornspeaker"
-ENV TENCENT_DATABASE_URL="mysql://build_placeholder:pass@localhost:3306/mornspeaker"
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
+
+ARG DEPLOY_TARGET=tencent
+ARG NEXT_PUBLIC_DEPLOY_TARGET=tencent
+ARG DATABASE_URL=mysql://build_placeholder:pass@localhost:3306/mornspeaker
+ARG TENCENT_DATABASE_URL=mysql://build_placeholder:pass@localhost:3306/mornspeaker
+
+ENV DEPLOY_TARGET=$DEPLOY_TARGET
+ENV NEXT_PUBLIC_DEPLOY_TARGET=$NEXT_PUBLIC_DEPLOY_TARGET
+ENV DATABASE_URL=$DATABASE_URL
+ENV TENCENT_DATABASE_URL=$TENCENT_DATABASE_URL
+
 RUN npm run build
+
+FROM node:20-slim AS production
+
+RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ARG NODE_ENV=production
+ENV NODE_ENV=$NODE_ENV
+
+ARG PORT=3000
+ENV PORT=$PORT
+
+COPY --from=base /app/package.json /app/package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY --from=base /app/.next ./.next
+COPY --from=base /app/public ./public
+COPY --from=base /app/next.config.mjs ./next.config.mjs
+
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S nextjs -u 1001
+RUN chown -R nextjs:nodejs /app
+USER nextjs
+
 EXPOSE 3000
 CMD ["npm", "run", "start:migrate"]
