@@ -43,8 +43,8 @@ COPY --from=base /app/.next ./.next
 COPY --from=base /app/public ./public
 COPY --from=base /app/next.config.mjs ./next.config.mjs
 
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nextjs -u 1001
+RUN groupadd -g 1001 nodejs
+RUN useradd -u 1001 -g nodejs -m nextjs
 RUN chown -R nextjs:nodejs /app
 USER nextjs
 
