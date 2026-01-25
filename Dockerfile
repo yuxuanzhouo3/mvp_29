@@ -4,9 +4,6 @@ RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /v
 
 WORKDIR /app
 
-ARG NODE_ENV=production
-ENV NODE_ENV=$NODE_ENV
-
 COPY package.json package-lock.json ./
 RUN npm ci
 
@@ -21,6 +18,9 @@ ENV DEPLOY_TARGET=$DEPLOY_TARGET
 ENV NEXT_PUBLIC_DEPLOY_TARGET=$NEXT_PUBLIC_DEPLOY_TARGET
 ENV DATABASE_URL=$DATABASE_URL
 ENV TENCENT_DATABASE_URL=$TENCENT_DATABASE_URL
+
+ARG NODE_ENV=production
+ENV NODE_ENV=$NODE_ENV
 
 RUN npm run build
 
