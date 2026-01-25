@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -25,6 +25,15 @@ export default function LoginPage() {
   const [verificationId, setVerificationId] = useState<string | null>(null)
   const [verifyAction, setVerifyAction] = useState<"signup" | "login">("signup")
   const [verificationEmail, setVerificationEmail] = useState<string | null>(null)
+  const verificationRequestLock = useRef(false)
+  const verificationVerifyLock = useRef(false)
+
+  const ensureCloudbasePersistence = async (auth: unknown) => {
+    const persistence = auth as { setPersistence?: (mode: string) => Promise<void> }
+    if (typeof persistence.setPersistence === "function") {
+      await persistence.setPersistence("local")
+    }
+  }
 
   const syncTencentUser = async (trimmedEmail: string, rawPassword: string) => {
     if (!isTencent) return
@@ -88,6 +97,7 @@ export default function LoginPage() {
       if (isTencent) {
         const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
         const auth = getCloudBaseAuth()
+        await ensureCloudbasePersistence(auth)
         const trimmedEmail = email.trim()
         if (!trimmedEmail) {
           toast({ title: "邮箱不能为空", description: "请输入邮箱后重试。", variant: "destructive" })
@@ -103,21 +113,18 @@ export default function LoginPage() {
           toast({ title: "验证码已发送", description: "请查收邮箱验证码完成登录。" })
           return
         }
-        if (typeof auth.signInWithEmail === "function") {
+        if (verificationRequestLock.current) return
+        verificationRequestLock.current = true
+        try {
           const verification = await auth.getVerification({ email: trimmedEmail })
           setVerificationId(verification.verification_id)
           setVerificationEmail(trimmedEmail)
           setVerifyAction("login")
           toast({ title: "验证码已发送", description: "请查收邮箱验证码完成登录。" })
           setView("verify")
-          return
+        } finally {
+          verificationRequestLock.current = false
         }
-        const verification = await auth.getVerification({ email: trimmedEmail })
-        setVerificationId(verification.verification_id)
-        setVerificationEmail(trimmedEmail)
-        setVerifyAction("login")
-        toast({ title: "验证码已发送", description: "请查收邮箱验证码完成登录。" })
-        setView("verify")
         return
       }
       const { error } = await supabase.auth.signInWithPassword({
@@ -148,25 +155,34 @@ export default function LoginPage() {
         const trimmedEmail = email.trim()
         const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
         const auth = getCloudBaseAuth()
+        await ensureCloudbasePersistence(auth)
         if (typeof auth.signUpWithEmailAndPassword === "function") {
           await auth.signUpWithEmailAndPassword(trimmedEmail, password)
           await syncTencentUser(trimmedEmail, password)
           toast({ title: "注册成功", description: "验证邮件已发送，请完成验证后登录。" })
           return
         }
-        const verification = await auth.getVerification({ email: trimmedEmail })
-        if (verification.is_user) {
-          toast({ title: "该邮箱已注册", description: "请直接登录。", variant: "destructive" })
-          return
+        if (verificationRequestLock.current) return
+        verificationRequestLock.current = true
+        try {
+          const verification = await auth.getVerification({ email: trimmedEmail })
+          setVerificationId(verification.verification_id)
+          setVerificationEmail(trimmedEmail)
+          if (verification.is_user) {
+            setVerifyAction("login")
+            toast({ title: "该邮箱已注册", description: "验证码已发送，请输入验证码完成登录。" })
+            setView("verify")
+            return
+          }
+          setVerifyAction("signup")
+          toast({
+            title: "验证码已发送",
+            description: "请查收邮箱验证码完成注册。",
+          })
+          setView("verify")
+        } finally {
+          verificationRequestLock.current = false
         }
-        setVerificationId(verification.verification_id)
-        setVerificationEmail(trimmedEmail)
-        setVerifyAction("signup")
-        toast({
-          title: "验证码已发送",
-          description: "请查收邮箱验证码完成注册。",
-        })
-        setView("verify")
         return
       }
       const { data, error } = await supabase.auth.signUp({
@@ -201,6 +217,7 @@ export default function LoginPage() {
       if (isTencent) {
         const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
         const auth = getCloudBaseAuth()
+        await ensureCloudbasePersistence(auth)
         if (typeof auth.signUpWithEmailAndPassword === "function") {
           toast({ title: "无需验证码", description: "请前往邮箱完成验证后再登录。" })
           return
@@ -209,24 +226,24 @@ export default function LoginPage() {
           toast({ title: "验证码不能为空", description: "请输入邮箱验证码后重试。", variant: "destructive" })
           return
         }
-        let currentVerificationId = verificationId
-        if (!currentVerificationId) {
-          const verification = await auth.getVerification({ email: trimmedEmail })
-          currentVerificationId = verification.verification_id
-          setVerificationId(currentVerificationId)
-        }
-        if (!currentVerificationId) {
-          toast({ title: "验证码已过期", description: "请重新获取验证码后再试。", variant: "destructive" })
-          return
-        }
-        if (verifyAction === "login") {
-          if (typeof auth.signInWithEmail === "function") {
-            await auth.signInWithEmail({
-              email: trimmedEmail,
-              verification_id: currentVerificationId,
-              verification_code: trimmedCode,
-            })
-          } else {
+        if (verificationVerifyLock.current) return
+        verificationVerifyLock.current = true
+        try {
+          if (verificationEmail && verificationEmail !== trimmedEmail) {
+            toast({ title: "邮箱不一致", description: "请使用接收验证码的邮箱完成验证。", variant: "destructive" })
+            return
+          }
+          let currentVerificationId = verificationId
+          if (!currentVerificationId) {
+            const verification = await auth.getVerification({ email: trimmedEmail })
+            currentVerificationId = verification.verification_id
+            setVerificationId(currentVerificationId)
+          }
+          if (!currentVerificationId) {
+            toast({ title: "验证码已过期", description: "请重新获取验证码后再试。", variant: "destructive" })
+            return
+          }
+          if (verifyAction === "login") {
             const verificationTokenRes = await auth.verify({
               verification_id: currentVerificationId,
               verification_code: trimmedCode,
@@ -235,26 +252,29 @@ export default function LoginPage() {
               username: trimmedEmail,
               verification_token: verificationTokenRes.verification_token,
             })
+            await syncTencentUser(trimmedEmail, password)
+            toast({ title: "登录成功", description: "已完成登录。" })
+            router.replace("/")
+            return
           }
+          const verificationTokenRes = await auth.verify({
+            verification_id: currentVerificationId,
+            verification_code: trimmedCode,
+          })
+          await auth.signUp({
+            email: trimmedEmail,
+            password,
+            verification_code: trimmedCode,
+            verification_token: verificationTokenRes.verification_token,
+            username: trimmedEmail,
+          })
           await syncTencentUser(trimmedEmail, password)
-          toast({ title: "登录成功", description: "已完成登录。" })
+          toast({ title: "验证成功", description: "已完成注册并登录。" })
           router.replace("/")
           return
+        } finally {
+          verificationVerifyLock.current = false
         }
-        const verificationTokenRes = await auth.verify({
-          verification_id: currentVerificationId,
-          verification_code: trimmedCode,
-        })
-        await auth.signUp({
-          email: trimmedEmail,
-          password,
-          verification_code: trimmedCode,
-          verification_token: verificationTokenRes.verification_token,
-          username: trimmedEmail,
-        })
-        await syncTencentUser(trimmedEmail, password)
-        toast({ title: "验证成功", description: "已完成注册并登录。" })
-        router.replace("/")
         return
       }
       const { data, error } = await supabase.auth.verifyOtp({
@@ -296,14 +316,21 @@ export default function LoginPage() {
       if (isTencent) {
         const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
         const auth = getCloudBaseAuth()
+        await ensureCloudbasePersistence(auth)
         if (typeof auth.signUpWithEmailAndPassword === "function") {
           toast({ title: "无需验证码", description: "请在邮箱中完成验证后登录。" })
           return
         }
-        const verification = await auth.getVerification({ email: trimmedEmail })
-        setVerificationId(verification.verification_id)
-        setVerificationEmail(trimmedEmail)
-        toast({ title: "已重新发送", description: "请查收邮箱中的验证码。" })
+        if (verificationRequestLock.current) return
+        verificationRequestLock.current = true
+        try {
+          const verification = await auth.getVerification({ email: trimmedEmail })
+          setVerificationId(verification.verification_id)
+          setVerificationEmail(trimmedEmail)
+          toast({ title: "已重新发送", description: "请查收邮箱中的验证码。" })
+        } finally {
+          verificationRequestLock.current = false
+        }
         return
       }
       const { error } = await supabase.auth.resend({

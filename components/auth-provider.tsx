@@ -105,6 +105,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         try {
           const { getCloudBaseAuth } = await import('@/lib/cloudbase-client')
           const auth = getCloudBaseAuth()
+          if (typeof auth.setPersistence === "function") {
+            await auth.setPersistence("local")
+          }
           
           const loginState = await auth.getLoginState()
           let currentUser = loginState ? loginState.user : null
@@ -164,8 +167,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return
     }
 
-    // If dummy client, skip auth check
-    if (supabase.supabaseUrl === "https://placeholder.supabase.co") {
+    const hasSupabasePublic =
+      Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL) &&
+      Boolean(
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
+      )
+    if (!hasSupabasePublic) {
       setIsLoading(false)
       return
     }
