@@ -4,8 +4,8 @@ RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /v
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json ./
+RUN npm install
 
 COPY . .
 
@@ -36,8 +36,8 @@ ENV NODE_ENV=$NODE_ENV
 ARG PORT=3000
 ENV PORT=$PORT
 
-COPY --from=base /app/package.json /app/package-lock.json ./
-RUN npm ci --omit=dev
+COPY --from=base /app/package.json ./
+RUN npm install --omit=dev
 
 COPY --from=base /app/.next ./.next
 COPY --from=base /app/public ./public
