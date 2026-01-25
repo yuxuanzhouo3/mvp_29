@@ -30,6 +30,7 @@ export function RoomJoin({ onJoin }: RoomJoinProps) {
   const { profile, user, signOut, updateProfile } = useAuth()
   const { toast } = useToast()
   const { locale, setLocale, t } = useI18n()
+  const isTencent = process.env.NEXT_PUBLIC_DEPLOY_TARGET === "tencent"
   const [roomId, setRoomId] = useState("")
   const [userName, setUserName] = useState("")
   const [joinPassword, setJoinPassword] = useState("")
@@ -153,7 +154,7 @@ export function RoomJoin({ onJoin }: RoomJoinProps) {
     const prev = locale
     setLocale(nextLocale)
 
-    if (!user) return
+    if (!user || isTencent) return
 
     setIsSavingLocale(true)
     try {
@@ -345,4 +346,3 @@ export function RoomJoin({ onJoin }: RoomJoinProps) {
     </div>
   )
 }
-

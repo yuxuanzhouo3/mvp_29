@@ -23,16 +23,51 @@ export default function LoginPage() {
   const [emailCode, setEmailCode] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [verificationId, setVerificationId] = useState<string | null>(null)
-  const [verifyAction, setVerifyAction] = useState<"signup" | "login">("signup")
   const [verificationEmail, setVerificationEmail] = useState<string | null>(null)
   const verificationRequestLock = useRef(false)
   const verificationVerifyLock = useRef(false)
+  const tencentLogoutKey = "tencent:auth:logged_out"
+  const clearTencentLoggedOut = () => {
+    if (!isTencent) return
+    try {
+      window.localStorage.removeItem(tencentLogoutKey)
+    } catch {
+      return
+    }
+  }
 
   const ensureCloudbasePersistence = async (auth: unknown) => {
     const persistence = auth as { setPersistence?: (mode: string) => Promise<void> }
     if (typeof persistence.setPersistence === "function") {
       await persistence.setPersistence("local")
     }
+  }
+
+  const buildTencentUsername = (value: string) => {
+    const localPart = value.split("@")[0] ?? ""
+    let normalized = localPart.toLowerCase().replace(/[^0-9a-z-_]/g, "-")
+    if (!/^[a-z]/.test(normalized)) {
+      normalized = `u${normalized}`
+    }
+    if (normalized.length < 6) {
+      normalized = (normalized + "000000").slice(0, 6)
+    }
+    if (normalized.length > 25) {
+      normalized = normalized.slice(0, 25)
+    }
+    if (!/^[a-z][0-9a-z-_]{5,24}$/.test(normalized)) {
+      normalized = normalized.replace(/[^0-9a-z-_]/g, "-")
+      if (!/^[a-z]/.test(normalized)) {
+        normalized = `u${normalized}`
+      }
+      if (normalized.length < 6) {
+        normalized = (normalized + "000000").slice(0, 6)
+      }
+      if (normalized.length > 25) {
+        normalized = normalized.slice(0, 25)
+      }
+    }
+    return normalized
   }
 
   const syncTencentUser = async (trimmedEmail: string, rawPassword: string) => {
@@ -45,7 +80,7 @@ export default function LoginPage() {
         body: JSON.stringify({
           email: trimmedEmail,
           password: rawPassword,
-          name: trimmedEmail.split("@")[0],
+          name: buildTencentUsername(trimmedEmail),
         }),
       })
     } catch {
@@ -69,7 +104,7 @@ export default function LoginPage() {
     }
 
     if (/not confirmed|confirm(ed)?|验证邮箱/i.test(message) || normalized.includes("email not confirmed")) {
-      return { title: "邮箱未验证", description: "请填写邮件中的验证码完成验证后再登录。", nextView: "verify" }
+      return { title: "邮箱未验证", description: "请先完成邮箱验证后再登录。", nextView: "verify" }
     }
 
     if (normalized.includes("user already registered") || normalized.includes("already registered")) {
@@ -91,6 +126,22 @@ export default function LoginPage() {
     return { title: "登录失败", description: message, variant: "destructive" }
   }
 
+  const extractTencentAuthError = (e: unknown): string => {
+    if (e instanceof Error && e.message) return e.message
+    if (typeof e === "string") return e
+    if (e && typeof e === "object") {
+      const maybe = e as { message?: unknown; error?: unknown; status?: unknown }
+      if (typeof maybe.status === "string" && maybe.status) return maybe.status
+      if (typeof maybe.message === "string" && maybe.message) return maybe.message
+      if (maybe.error) return extractTencentAuthError(maybe.error)
+      if (typeof (e as { toString?: () => string }).toString === "function") {
+        const text = (e as { toString: () => string }).toString()
+        if (text && text !== "[object Object]") return text
+      }
+    }
+    return "操作失败"
+  }
+
   const handleEmailLogin = async () => {
     setIsSubmitting(true)
     try {
@@ -103,28 +154,27 @@ export default function LoginPage() {
           toast({ title: "邮箱不能为空", description: "请输入邮箱后重试。", variant: "destructive" })
           return
         }
-        if (typeof auth.signInWithEmailAndPassword === "function") {
-          await auth.signInWithEmailAndPassword(trimmedEmail, password)
+        if (typeof auth.signOut === "function") {
+          try {
+            await auth.signOut()
+          } catch { }
+        }
+        if (typeof auth.signInWithPassword === "function") {
+          const result = await auth.signInWithPassword({ email: trimmedEmail, password })
+          if (result?.error) throw result.error
+          clearTencentLoggedOut()
           await syncTencentUser(trimmedEmail, password)
           router.replace("/")
           return
         }
-        if (view === "verify" && verifyAction === "login" && verificationId && verificationEmail === trimmedEmail) {
-          toast({ title: "验证码已发送", description: "请查收邮箱验证码完成登录。" })
+        if (typeof auth.signInWithEmailAndPassword === "function") {
+          await auth.signInWithEmailAndPassword(trimmedEmail, password)
+          clearTencentLoggedOut()
+          await syncTencentUser(trimmedEmail, password)
+          router.replace("/")
           return
         }
-        if (verificationRequestLock.current) return
-        verificationRequestLock.current = true
-        try {
-          const verification = await auth.getVerification({ email: trimmedEmail })
-          setVerificationId(verification.verification_id)
-          setVerificationEmail(trimmedEmail)
-          setVerifyAction("login")
-          toast({ title: "验证码已发送", description: "请查收邮箱验证码完成登录。" })
-          setView("verify")
-        } finally {
-          verificationRequestLock.current = false
-        }
+        toast({ title: "当前 SDK 不支持邮箱密码登录", description: "请升级云开发 JS SDK 后重试。", variant: "destructive" })
         return
       }
       const { error } = await supabase.auth.signInWithPassword({
@@ -135,9 +185,6 @@ export default function LoginPage() {
       router.replace("/")
     } catch (e) {
       const formatted = formatAuthError(e)
-      if (formatted.nextView === "verify") {
-        setView("verify")
-      }
       toast({
         title: formatted.title,
         description: formatted.description,
@@ -156,12 +203,6 @@ export default function LoginPage() {
         const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
         const auth = getCloudBaseAuth()
         await ensureCloudbasePersistence(auth)
-        if (typeof auth.signUpWithEmailAndPassword === "function") {
-          await auth.signUpWithEmailAndPassword(trimmedEmail, password)
-          await syncTencentUser(trimmedEmail, password)
-          toast({ title: "注册成功", description: "验证邮件已发送，请完成验证后登录。" })
-          return
-        }
         if (verificationRequestLock.current) return
         verificationRequestLock.current = true
         try {
@@ -169,12 +210,10 @@ export default function LoginPage() {
           setVerificationId(verification.verification_id)
           setVerificationEmail(trimmedEmail)
           if (verification.is_user) {
-            setVerifyAction("login")
-            toast({ title: "该邮箱已注册", description: "验证码已发送，请输入验证码完成登录。" })
-            setView("verify")
+            toast({ title: "该邮箱已注册", description: "请直接登录。", variant: "destructive" })
+            setView("form")
             return
           }
-          setVerifyAction("signup")
           toast({
             title: "验证码已发送",
             description: "请查收邮箱验证码完成注册。",
@@ -218,12 +257,12 @@ export default function LoginPage() {
         const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
         const auth = getCloudBaseAuth()
         await ensureCloudbasePersistence(auth)
-        if (typeof auth.signUpWithEmailAndPassword === "function") {
-          toast({ title: "无需验证码", description: "请前往邮箱完成验证后再登录。" })
-          return
-        }
         if (!trimmedEmail || !trimmedCode) {
           toast({ title: "验证码不能为空", description: "请输入邮箱验证码后重试。", variant: "destructive" })
+          return
+        }
+        if (!password) {
+          toast({ title: "密码不能为空", description: "请输入密码后重试。", variant: "destructive" })
           return
         }
         if (verificationVerifyLock.current) return
@@ -233,41 +272,21 @@ export default function LoginPage() {
             toast({ title: "邮箱不一致", description: "请使用接收验证码的邮箱完成验证。", variant: "destructive" })
             return
           }
-          let currentVerificationId = verificationId
-          if (!currentVerificationId) {
-            const verification = await auth.getVerification({ email: trimmedEmail })
-            currentVerificationId = verification.verification_id
-            setVerificationId(currentVerificationId)
-          }
-          if (!currentVerificationId) {
-            toast({ title: "验证码已过期", description: "请重新获取验证码后再试。", variant: "destructive" })
-            return
-          }
-          if (verifyAction === "login") {
-            const verificationTokenRes = await auth.verify({
-              verification_id: currentVerificationId,
-              verification_code: trimmedCode,
-            })
-            await auth.signIn({
-              username: trimmedEmail,
-              verification_token: verificationTokenRes.verification_token,
-            })
-            await syncTencentUser(trimmedEmail, password)
-            toast({ title: "登录成功", description: "已完成登录。" })
-            router.replace("/")
-            return
-          }
-          const verificationTokenRes = await auth.verify({
-            verification_id: currentVerificationId,
-            verification_code: trimmedCode,
-          })
-          await auth.signUp({
+          const signUpRes = await auth.signUp({
             email: trimmedEmail,
             password,
-            verification_code: trimmedCode,
-            verification_token: verificationTokenRes.verification_token,
-            username: trimmedEmail,
+            username: buildTencentUsername(trimmedEmail),
           })
+          if (signUpRes?.error) throw signUpRes.error
+          if (!signUpRes?.data?.verifyOtp) {
+            throw new Error("验证码流程不可用")
+          }
+          const verifyRes = await signUpRes.data.verifyOtp({
+            token: trimmedCode,
+            messageId: verificationId || undefined,
+          })
+          if (verifyRes?.error) throw verifyRes.error
+          clearTencentLoggedOut()
           await syncTencentUser(trimmedEmail, password)
           toast({ title: "验证成功", description: "已完成注册并登录。" })
           router.replace("/")
@@ -275,7 +294,6 @@ export default function LoginPage() {
         } finally {
           verificationVerifyLock.current = false
         }
-        return
       }
       const { data, error } = await supabase.auth.verifyOtp({
         email: trimmedEmail,
@@ -298,6 +316,26 @@ export default function LoginPage() {
       toast({ title: "验证成功", description: "已完成注册并登录。" })
       router.replace("/")
     } catch (e) {
+      if (isTencent) {
+        const rawMessage = extractTencentAuthError(e)
+        const normalized = rawMessage.toLowerCase()
+        let description = rawMessage
+        if (normalized.includes("invalid_argument")) {
+          description = "参数不合法。请重新获取验证码，并将密码设置为包含字母和数字的 6-20 位组合。"
+        } else if (normalized.includes("invalid_verification_code")) {
+          description = "验证码无效或已过期，请点击重新发送后再试。"
+        } else if (normalized.includes("already_exists")) {
+          description = "该邮箱已注册，请直接登录或重置密码。"
+        } else if (normalized.includes("invalid_password")) {
+          description = "密码不符合要求，请使用包含字母和数字的 6-20 位组合。"
+        }
+        toast({
+          title: "验证失败",
+          description,
+          variant: "destructive",
+        })
+        return
+      }
       const formatted = formatAuthError(e)
       toast({
         title: formatted.title === "登录失败" ? "验证失败" : formatted.title,
@@ -317,10 +355,6 @@ export default function LoginPage() {
         const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
         const auth = getCloudBaseAuth()
         await ensureCloudbasePersistence(auth)
-        if (typeof auth.signUpWithEmailAndPassword === "function") {
-          toast({ title: "无需验证码", description: "请在邮箱中完成验证后登录。" })
-          return
-        }
         if (verificationRequestLock.current) return
         verificationRequestLock.current = true
         try {
@@ -407,6 +441,7 @@ export default function LoginPage() {
                 autoComplete={view === "verify" ? "new-password" : "current-password"}
                 required
               />
+              <p className="text-xs text-muted-foreground">密码需包含字母和数字，长度 6-20 位。</p>
             </div>
 
             {view === "verify" ? (

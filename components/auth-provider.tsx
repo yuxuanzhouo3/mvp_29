@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react'
+import { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { getSupabaseBrowserClient } from '@/lib/supabase/browser'
 import { type Session, type User, type AuthChangeEvent } from '@supabase/supabase-js'
 
@@ -29,8 +29,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const tencentAuthSnapshotRef = useRef<{ uid: string | null; email: string | null; displayName: string | null }>({
+    uid: null,
+    email: null,
+    displayName: null
+  })
+  const refreshInFlightRef = useRef<Promise<void> | null>(null)
   const supabase = useMemo(() => getSupabaseBrowserClient(), [])
   const isTencent = process.env.NEXT_PUBLIC_DEPLOY_TARGET === 'tencent'
+  const tencentLogoutKey = 'tencent:auth:logged_out'
+  const getTencentLoggedOut = () => {
+    if (typeof window === 'undefined') return false
+    try {
+      return window.localStorage.getItem(tencentLogoutKey) === '1'
+    } catch {
+      return false
+    }
+  }
+  const setTencentLoggedOut = (value: boolean) => {
+    if (typeof window === 'undefined') return
+    try {
+      if (value) {
+        window.localStorage.setItem(tencentLogoutKey, '1')
+      } else {
+        window.localStorage.removeItem(tencentLogoutKey)
+      }
+    } catch {
+      return
+    }
+  }
 
   const fetchProfile = useCallback(async (userId: string) => {
     if (isTencent) return
@@ -87,12 +114,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     if (isTencent) {
-      const { getCloudBaseAuth } = await import('@/lib/cloudbase-client')
-      const auth = getCloudBaseAuth()
-      await auth.signOut()
-      setSession(null)
-      setUser(null)
-      setProfile(null)
+      try {
+        const { getCloudBaseAuth } = await import('@/lib/cloudbase-client')
+        const auth = getCloudBaseAuth()
+        setTencentLoggedOut(true)
+        await Promise.race([
+          auth.signOut(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Sign out timeout')), 3000))
+        ])
+      } catch (err) {
+        console.warn("CloudBase signOut error or timeout:", err)
+      } finally {
+        setSession(null)
+        setUser(null)
+        setProfile(null)
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
       return
     }
     await supabase.auth.signOut()
@@ -101,6 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Domestic/Tencent Environment: Use CloudBase Auth (Anonymous)
     if (isTencent) {
+      let cancelled = false
       const initCloudBaseAuth = async () => {
         try {
           const { getCloudBaseAuth } = await import('@/lib/cloudbase-client')
@@ -108,22 +146,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (typeof auth.setPersistence === "function") {
             await auth.setPersistence("local")
           }
-          
-          const loginState = await auth.getLoginState()
-          let currentUser = loginState ? loginState.user : null
-          
-          if (!currentUser) {
-            await auth.signInAnonymously()
-            currentUser = auth.currentUser
-          }
-
-          if (currentUser) {
-            // Adapt CloudBase user to Supabase-like User structure
+          const applyCurrentUser = (currentUser: { uid: string } | null) => {
+            if (cancelled) return
+            if (!currentUser) {
+              const prev = tencentAuthSnapshotRef.current
+              if (prev.uid === null && prev.email === null && prev.displayName === null) return
+              tencentAuthSnapshotRef.current = { uid: null, email: null, displayName: null }
+              setUser(null)
+              setSession(null)
+              setProfile(null)
+              return
+            }
             const email = (currentUser as { email?: string }).email ?? null
             const displayName =
               (currentUser as { nickName?: string }).nickName ??
               (currentUser as { username?: string }).username ??
               (email ? email.split("@")[0] : 'Guest User')
+            const prev = tencentAuthSnapshotRef.current
+            if (prev.uid === currentUser.uid && prev.email === email && prev.displayName === displayName) return
+            tencentAuthSnapshotRef.current = { uid: currentUser.uid, email, displayName }
             const adaptedUser: User = {
               id: currentUser.uid,
               app_metadata: {},
@@ -138,7 +179,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               updated_at: undefined,
               factors: undefined
             }
-            
             setUser(adaptedUser)
             setSession({
               access_token: 'mock_token_cloudbase',
@@ -147,8 +187,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               refresh_token: 'mock_refresh_cloudbase',
               user: adaptedUser
             })
-            
-            // Mock profile for guest user
             setProfile({
               id: currentUser.uid,
               email: email ?? null,
@@ -156,15 +194,75 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               avatar_url: null
             })
           }
+
+          const refreshLoginState = async () => {
+            if (refreshInFlightRef.current) return refreshInFlightRef.current
+            refreshInFlightRef.current = (async () => {
+              const runWithTimeout = async <T,>(promise: Promise<T>, timeoutMs: number) => {
+                let timeoutId: ReturnType<typeof setTimeout> | null = null
+                try {
+                  return await Promise.race([
+                    promise,
+                    new Promise<T>((_, reject) => {
+                      timeoutId = setTimeout(() => reject(new Error('timeout')), timeoutMs)
+                    })
+                  ])
+                } finally {
+                  if (timeoutId) clearTimeout(timeoutId)
+                }
+              }
+              try {
+                const loginState = await runWithTimeout(auth.getLoginState(), 3000)
+                let currentUser: { uid: string } | null = null
+                if (loginState && typeof loginState === "object" && "user" in loginState) {
+                  currentUser = (loginState as { user?: { uid: string } | null }).user ?? null
+                }
+                const isLoggedOut = getTencentLoggedOut()
+                if (!currentUser && !isLoggedOut) {
+                  await runWithTimeout(auth.signInAnonymously(), 3000)
+                  currentUser = auth.currentUser
+                }
+                applyCurrentUser(currentUser)
+              } catch (err) {
+                console.error("CloudBase auth state refresh failed:", err)
+                applyCurrentUser(null)
+              } finally {
+                refreshInFlightRef.current = null
+              }
+            })()
+            return refreshInFlightRef.current
+          }
+
+          await refreshLoginState()
+
+          if (typeof auth.onLoginStateChanged === "function") {
+            auth.onLoginStateChanged((loginState: unknown) => {
+              if (cancelled) return
+              if (loginState && typeof loginState === "object" && "user" in loginState) {
+                const state = loginState as { user?: { uid: string } | null }
+                applyCurrentUser(state.user ?? null)
+                return
+              }
+              if (getTencentLoggedOut()) {
+                applyCurrentUser(null)
+                return
+              }
+              void refreshLoginState()
+            }).catch((e: unknown) => console.error("Failed to register login state listener:", e))
+          }
         } catch (err) {
           console.error("CloudBase auth error:", err)
         } finally {
-          setIsLoading(false)
+          if (!cancelled) {
+            setIsLoading(false)
+          }
         }
       }
-      
+
       initCloudBaseAuth()
-      return
+      return () => {
+        cancelled = true
+      }
     }
 
     const hasSupabasePublic =
