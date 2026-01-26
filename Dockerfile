@@ -62,4 +62,4 @@ RUN chown -R nextjs:nodejs /app
 USER nextjs
 
 EXPOSE 3000
-CMD ["npm", "run", "start:migrate"]
+CMD ["npm", "run", "start"]
