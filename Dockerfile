@@ -10,9 +10,6 @@ ENV NPM_CONFIG_OMIT=
 
 COPY package.json package-lock.json ./
 RUN npm ci --include=optional \
-  && npm install --no-save lightningcss-linux-x64-gnu@1.30.2 \
-  && npm install --no-save lightningcss-wasm@1.30.2 \
-  && npm install --no-save @tailwindcss/oxide-linux-x64-gnu@4.1.18 \
   && node -e "const fs=require('fs');const path=require('path');const root=process.cwd();const bin=path.join(root,'node_modules','lightningcss-linux-x64-gnu','lightningcss.linux-x64-gnu.node');if(fs.existsSync(bin)){const target=path.join(root,'node_modules','lightningcss','lightningcss.linux-x64-gnu.node');fs.copyFileSync(bin,target);}const wasmSrc=path.join(root,'node_modules','lightningcss-wasm','pkg');const wasmDst=path.join(root,'node_modules','lightningcss','pkg');if(fs.existsSync(wasmSrc)){fs.cpSync(wasmSrc,wasmDst,{recursive:true});}"
 
 FROM node:20-slim AS builder
