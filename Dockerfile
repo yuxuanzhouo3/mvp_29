@@ -4,8 +4,11 @@ RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /v
 
 WORKDIR /app
 
+ENV NPM_CONFIG_OPTIONAL=true
+ENV NPM_CONFIG_IGNORE_SCRIPTS=false
+
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --include=optional
 
 FROM node:20-slim AS builder
 
@@ -44,7 +47,7 @@ ARG PORT=3000
 ENV PORT=${PORT}
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --include=optional
 
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
