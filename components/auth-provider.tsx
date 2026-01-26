@@ -148,7 +148,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
           const applyCurrentUser = (currentUser: { uid: string } | null) => {
             if (cancelled) return
-            if (!currentUser) {
+            const email = currentUser ? (currentUser as { email?: string }).email ?? null : null
+            if (!currentUser || !email) {
               const prev = tencentAuthSnapshotRef.current
               if (prev.uid === null && prev.email === null && prev.displayName === null) return
               tencentAuthSnapshotRef.current = { uid: null, email: null, displayName: null }
@@ -157,7 +158,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               setProfile(null)
               return
             }
-            const email = (currentUser as { email?: string }).email ?? null
             const displayName =
               (currentUser as { nickName?: string }).nickName ??
               (currentUser as { username?: string }).username ??
@@ -218,9 +218,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                   currentUser = (loginState as { user?: { uid: string } | null }).user ?? null
                 }
                 const isLoggedOut = getTencentLoggedOut()
-                if (!currentUser && !isLoggedOut) {
-                  await runWithTimeout(auth.signInAnonymously(), 3000)
-                  currentUser = auth.currentUser
+                if (isLoggedOut) {
+                  currentUser = null
                 }
                 applyCurrentUser(currentUser)
               } catch (err) {
