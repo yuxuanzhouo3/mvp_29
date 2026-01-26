@@ -80,3 +80,33 @@ model AppSetting {
 
   @@map("app_settings")
 }
+
+model Order {
+  id           String   @id @default(uuid())
+  userId       String
+  amountCny    Decimal  @db.Decimal(10, 2)
+  subject      String
+  status       String
+  provider     String
+  outTradeNo   String   @unique
+  tradeNo      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("orders")
+}
+
+model Payment {
+  id           String   @id @default(uuid())
+  orderId      String
+  provider     String
+  tradeNo      String
+  buyerId      String?
+  payAmountCny Decimal  @db.Decimal(10, 2)
+  payTime      DateTime?
+  rawNotify    Json?
+  createdAt    DateTime @default(now())
+
+  @@index([orderId])
+  @@map("payments")
+}

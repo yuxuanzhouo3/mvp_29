@@ -1,26 +1,33 @@
-FROM node:20-slim AS base
+FROM node:20-slim AS deps
 
 RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
+FROM node:20-slim AS builder
+
+RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 ARG DEPLOY_TARGET=tencent
 ARG NEXT_PUBLIC_DEPLOY_TARGET=tencent
-ARG DATABASE_URL=mysql://build_placeholder:pass@localhost:3306/mornspeaker
-ARG TENCENT_DATABASE_URL=mysql://build_placeholder:pass@localhost:3306/mornspeaker
+ARG DATABASE_URL
+ARG TENCENT_DATABASE_URL
 
-ENV DEPLOY_TARGET=$DEPLOY_TARGET
-ENV NEXT_PUBLIC_DEPLOY_TARGET=$NEXT_PUBLIC_DEPLOY_TARGET
-ENV DATABASE_URL=$DATABASE_URL
-ENV TENCENT_DATABASE_URL=$TENCENT_DATABASE_URL
+ENV DEPLOY_TARGET=${DEPLOY_TARGET}
+ENV NEXT_PUBLIC_DEPLOY_TARGET=${NEXT_PUBLIC_DEPLOY_TARGET}
+ENV DATABASE_URL=${DATABASE_URL}
+ENV TENCENT_DATABASE_URL=${TENCENT_DATABASE_URL}
 
 ARG NODE_ENV=production
-ENV NODE_ENV=$NODE_ENV
+ENV NODE_ENV=${NODE_ENV}
 
 RUN npm run build
 
@@ -34,14 +41,15 @@ ARG NODE_ENV=production
 ENV NODE_ENV=$NODE_ENV
 
 ARG PORT=3000
-ENV PORT=$PORT
+ENV PORT=${PORT}
 
-COPY --from=base /app/package.json ./
-RUN npm install --omit=dev
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
-COPY --from=base /app/.next ./.next
-COPY --from=base /app/public ./public
-COPY --from=base /app/next.config.mjs ./next.config.mjs
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/next.config.mjs ./next.config.mjs
+COPY --from=builder /app/prisma ./prisma
 
 RUN groupadd -g 1001 nodejs
 RUN useradd -u 1001 -g nodejs -m nextjs

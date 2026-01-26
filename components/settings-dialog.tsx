@@ -38,6 +38,7 @@ export function SettingsDialog({ onSettingsChange }: SettingsDialogProps) {
   const { toast } = useToast()
   const { user, profile, updateProfile } = useAuth()
   const { t } = useI18n()
+  const isTencent = process.env.NEXT_PUBLIC_DEPLOY_TARGET === "tencent"
 
   const [settings, setSettings] = useState<AppSettings>({
     darkMode: false,
@@ -73,6 +74,7 @@ export function SettingsDialog({ onSettingsChange }: SettingsDialogProps) {
   const [newPassword, setNewPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false)
+  const [isCreatingPay, setIsCreatingPay] = useState(false)
 
   useEffect(() => {
     setDisplayName(initialDisplayName)
@@ -167,6 +169,39 @@ export function SettingsDialog({ onSettingsChange }: SettingsDialogProps) {
       })
     } finally {
       setIsUpdatingPassword(false)
+    }
+  }
+
+  const createPayOrder = async () => {
+    if (!user) {
+      toast({ title: t("settings.notLoggedInTitle"), description: t("settings.notLoggedInDesc"), variant: "destructive" })
+      return
+    }
+    if (isCreatingPay) return
+    setIsCreatingPay(true)
+    try {
+      const response = await fetch("/api/pay/alipay/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amountCny: 9.9,
+          subject: "MornSpeaker 会员月卡",
+          userId: user.id,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok || !data?.url) {
+        throw new Error(data?.error || t("settings.payFailedDesc"))
+      }
+      window.location.href = data.url as string
+    } catch (e) {
+      toast({
+        title: t("settings.payFailedTitle"),
+        description: e instanceof Error ? e.message : t("settings.payFailedDesc"),
+        variant: "destructive",
+      })
+    } finally {
+      setIsCreatingPay(false)
     }
   }
 
@@ -346,6 +381,18 @@ export function SettingsDialog({ onSettingsChange }: SettingsDialogProps) {
               {t("settings.export")}
             </Button>
           </div>
+          {isTencent ? (
+            <div className="pt-4 border-t border-border space-y-3">
+              <div className="text-sm font-medium">{t("settings.billing")}</div>
+              <div className="text-sm text-muted-foreground">{t("settings.billingDesc")}</div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm">{t("settings.billingPrice")}</div>
+                <Button onClick={createPayOrder} disabled={!user || isCreatingPay}>
+                  {isCreatingPay ? t("settings.payCreating") : t("settings.payNow")}
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </div>
       </DialogContent>
     </Dialog>
