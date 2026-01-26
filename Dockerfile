@@ -48,13 +48,9 @@ ENV NODE_ENV=$NODE_ENV
 ARG PORT=3000
 ENV PORT=${PORT}
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --include=optional
-
-COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/next.config.mjs ./next.config.mjs
-COPY --from=builder /app/prisma ./prisma
 
 RUN groupadd -g 1001 nodejs
 RUN useradd -u 1001 -g nodejs -m nextjs
@@ -62,4 +58,4 @@ RUN chown -R nextjs:nodejs /app
 USER nextjs
 
 EXPOSE 3000
-CMD ["npm", "run", "start"]
+CMD ["node", "server.js"]
