@@ -6,9 +6,12 @@ WORKDIR /app
 
 ENV NPM_CONFIG_OPTIONAL=true
 ENV NPM_CONFIG_IGNORE_SCRIPTS=false
+ENV NPM_CONFIG_OMIT=
 
 COPY package.json package-lock.json ./
-RUN npm ci --include=optional && node -e "const fs=require('fs');const path=require('path');let src;try{src=require.resolve('lightningcss-linux-x64-gnu');}catch(e){process.exit(0)}const bin=src.endsWith('.node')?src:path.join(path.dirname(src),'lightningcss.linux-x64-gnu.node');if(fs.existsSync(bin)){const target=path.join(process.cwd(),'node_modules','lightningcss','lightningcss.linux-x64-gnu.node');fs.copyFileSync(bin,target);}"
+RUN npm ci --include=optional \
+  && npm install --no-save lightningcss-linux-x64-gnu@1.30.2 \
+  && node -e "const fs=require('fs');const path=require('path');const bin=path.join(process.cwd(),'node_modules','lightningcss-linux-x64-gnu','lightningcss.linux-x64-gnu.node');if(fs.existsSync(bin)){const target=path.join(process.cwd(),'node_modules','lightningcss','lightningcss.linux-x64-gnu.node');fs.copyFileSync(bin,target);}"
 
 FROM node:20-slim AS builder
 
