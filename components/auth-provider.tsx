@@ -148,7 +148,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
           const applyCurrentUser = (currentUser: { uid: string } | null) => {
             if (cancelled) return
-            const email = currentUser ? (currentUser as { email?: string }).email ?? null : null
+            const rawEmail = currentUser ? (currentUser as { email?: string }).email ?? null : null
+            const email = typeof rawEmail === 'string' ? rawEmail.trim() : null
             if (!currentUser || !email) {
               const prev = tencentAuthSnapshotRef.current
               if (prev.uid === null && prev.email === null && prev.displayName === null) return
