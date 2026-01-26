@@ -8,7 +8,7 @@ ENV NPM_CONFIG_OPTIONAL=true
 ENV NPM_CONFIG_IGNORE_SCRIPTS=false
 
 COPY package.json package-lock.json ./
-RUN npm ci --include=optional
+RUN npm ci --include=optional && node -e "const fs=require('fs');const path=require('path');let src;try{src=require.resolve('lightningcss-linux-x64-gnu');}catch(e){process.exit(0)}const bin=src.endsWith('.node')?src:path.join(path.dirname(src),'lightningcss.linux-x64-gnu.node');if(fs.existsSync(bin)){const target=path.join(process.cwd(),'node_modules','lightningcss','lightningcss.linux-x64-gnu.node');fs.copyFileSync(bin,target);}"
 
 FROM node:20-slim AS builder
 
