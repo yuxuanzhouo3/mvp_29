@@ -11,6 +11,7 @@ import { UI_LOCALES, type UiLocale } from "@/lib/i18n"
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { useState } from "react"
+import Link from "next/link"
 
 type HeaderProps = {
   onClearChat?: () => void
@@ -43,7 +44,7 @@ export function Header({ onClearChat, messageCount = 0, onSettingsChange, roomId
   return (
     <header className="border-b border-border bg-card">
       <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+        <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
           <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
             <Mic2 className="w-6 h-6 text-primary-foreground" />
           </div>
@@ -52,9 +53,9 @@ export function Header({ onClearChat, messageCount = 0, onSettingsChange, roomId
             <p className="text-sm text-muted-foreground">
               {roomId ? (
                 <span className="flex items-center gap-2">
-                  <Button 
-                    variant="ghost" 
-                    size="sm" 
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     className="h-auto p-0 hover:bg-transparent text-muted-foreground hover:text-foreground font-normal"
                     onClick={onShowUsers}
                   >
@@ -76,7 +77,7 @@ export function Header({ onClearChat, messageCount = 0, onSettingsChange, roomId
               )}
             </p>
           </div>
-        </div>
+        </Link>
 
         <div className="flex items-center gap-2">
           {/* Desktop Actions */}
@@ -187,9 +188,9 @@ export function Header({ onClearChat, messageCount = 0, onSettingsChange, roomId
                   )}
 
                   {messageCount > 0 && onClearChat && (
-                    <Button 
-                      variant="outline" 
-                      className="w-full justify-start gap-2 text-destructive hover:text-destructive" 
+                    <Button
+                      variant="outline"
+                      className="w-full justify-start gap-2 text-destructive hover:text-destructive"
                       onClick={() => {
                         onClearChat()
                         setIsMobileMenuOpen(false)

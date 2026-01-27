@@ -1,11 +1,11 @@
-import { Dashboard } from "@/components/dashboard"
+import { VoiceChatInterface } from "@/components/voice-chat-interface"
 import { AuthRequired } from "@/components/auth-required"
 
-export default function Home() {
+export default function RoomPage() {
   return (
     <main className="min-h-screen bg-background">
       <AuthRequired>
-        <Dashboard />
+        <VoiceChatInterface />
       </AuthRequired>
     </main>
   )
