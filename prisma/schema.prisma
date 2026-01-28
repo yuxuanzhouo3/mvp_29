@@ -81,6 +81,21 @@ model AppSetting {
   @@map("app_settings")
 }
 
+model Ad {
+  id        String   @id @default(uuid())
+  slotKey   String   @map("slot_key")
+  title     String?
+  imageUrl  String?  @map("image_url")
+  linkUrl   String?  @map("link_url")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([slotKey])
+  @@index([isActive])
+  @@map("ads")
+}
+
 model Order {
   id           String   @id @default(uuid())
   userId       String

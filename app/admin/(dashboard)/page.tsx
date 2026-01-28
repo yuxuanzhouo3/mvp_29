@@ -1,10 +1,15 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { createClient } from "@supabase/supabase-js";
 import { Users, MessageSquare, Activity } from "lucide-react";
+import { getPrisma } from "@/lib/prisma";
 
 export const dynamic = 'force-dynamic';
 
 export default async function AdminDashboard() {
+  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
+    .trim()
+    .toLowerCase()
+  const isTencent = target === "tencent"
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   
@@ -12,7 +17,17 @@ export default async function AdminDashboard() {
   let roomCount = 0;
   let messageCount = 0;
 
-  if (supabaseUrl && supabaseKey) {
+  if (isTencent) {
+    const prisma = await getPrisma()
+    const [uCount, rCount, mCount] = await Promise.all([
+      prisma.user.count(),
+      prisma.room.count(),
+      prisma.roomMessage.count(),
+    ])
+    userCount = uCount
+    roomCount = rCount
+    messageCount = mCount
+  } else if (supabaseUrl && supabaseKey) {
     const key = process.env.SUPABASE_SERVICE_ROLE_KEY || supabaseKey;
     const supabase = createClient(supabaseUrl, key);
 

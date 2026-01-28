@@ -2,6 +2,8 @@ import { type NextRequest, NextResponse } from "next/server"
 import { getRoomStore } from "@/lib/store"
 import type { Message } from "@/lib/store/types"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
+import type { Prisma } from "@prisma/client"
+import { getPrisma } from "@/lib/prisma"
 import crypto from "node:crypto"
 
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000
@@ -11,6 +13,11 @@ const ROOM_SETTINGS_PREFIX = "room:"
 
 type SettingsCache = { value: boolean; fetchedAt: number }
 type CleanupCache = { lastRunAt: number }
+type MysqlClient = Awaited<ReturnType<typeof getPrisma>>
+type SettingsStore =
+  | { kind: "supabase"; client: SupabaseClient }
+  | { kind: "mysql"; client: MysqlClient }
+  | { kind: "memory" }
 
 const globalForRoomSettings = globalThis as unknown as {
   __voicelinkRoomAutoDeleteCache?: SettingsCache
@@ -18,7 +25,15 @@ const globalForRoomSettings = globalThis as unknown as {
   __voicelinkRoomJoinSettings?: Map<string, unknown>
 }
 
+function isTencentTarget(): boolean {
+  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
+    .trim()
+    .toLowerCase()
+  return target === "tencent"
+}
+
 function getSupabaseClient(): SupabaseClient | null {
+  if (isTencentTarget()) return null
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseKey =
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
@@ -29,6 +44,16 @@ function getSupabaseClient(): SupabaseClient | null {
   return createClient(supabaseUrl, supabaseKey)
 }
 
+async function getSettingsStore(): Promise<SettingsStore> {
+  const supabase = getSupabaseClient()
+  if (supabase) return { kind: "supabase", client: supabase }
+  if (isTencentTarget()) {
+    const client = await getPrisma()
+    return { kind: "mysql", client }
+  }
+  return { kind: "memory" }
+}
+
 function extractEnabledFromSettingValue(value: unknown): boolean | null {
   if (typeof value === "boolean") return value
   if (typeof value !== "object" || value === null) return null
@@ -37,81 +62,149 @@ function extractEnabledFromSettingValue(value: unknown): boolean | null {
   return null
 }
 
-async function getRoomAutoDeleteEnabled(supabase: SupabaseClient): Promise<boolean> {
+async function getSettingValue(store: SettingsStore, key: string): Promise<unknown | null> {
+  if (store.kind === "supabase") {
+    const { data, error } = await store.client.from("app_settings").select("value").eq("key", key).maybeSingle()
+    if (error || !data) return null
+    return (data as { value?: unknown } | null)?.value ?? null
+  }
+  if (store.kind === "mysql") {
+    const data = await store.client.appSetting.findUnique({ where: { key } })
+    return data?.value ?? null
+  }
+  return getInMemorySettingsStore().get(key) ?? null
+}
+
+async function setSettingValue(store: SettingsStore, key: string, value: unknown): Promise<void> {
+  if (store.kind === "supabase") {
+    await store.client
+      .from("app_settings")
+      .upsert(
+        {
+          key,
+          value,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "key" },
+      )
+    return
+  }
+  if (store.kind === "mysql") {
+    const nextValue = value as Prisma.InputJsonValue
+    await store.client.appSetting.upsert({
+      where: { key },
+      create: { key, value: nextValue },
+      update: { value: nextValue },
+    })
+    return
+  }
+  getInMemorySettingsStore().set(key, value)
+}
+
+async function getRoomAutoDeleteEnabled(store: SettingsStore): Promise<boolean> {
   const cached = globalForRoomSettings.__voicelinkRoomAutoDeleteCache
   if (cached && Date.now() - cached.fetchedAt < 30_000) return cached.value
 
-  const { data, error } = await supabase.from("app_settings").select("value").eq("key", SETTINGS_KEY).maybeSingle()
-  if (error) {
-    globalForRoomSettings.__voicelinkRoomAutoDeleteCache = { value: false, fetchedAt: Date.now() }
-    return false
-  }
-
-  const enabled = extractEnabledFromSettingValue((data as { value?: unknown } | null)?.value) ?? false
+  const value = await getSettingValue(store, SETTINGS_KEY)
+  const enabled = extractEnabledFromSettingValue(value) ?? false
   globalForRoomSettings.__voicelinkRoomAutoDeleteCache = { value: enabled, fetchedAt: Date.now() }
   return enabled
 }
 
-async function maybeCleanupExpiredRooms(supabase: SupabaseClient): Promise<void> {
+async function maybeCleanupExpiredRooms(store: SettingsStore): Promise<void> {
   const cache = globalForRoomSettings.__voicelinkRoomCleanupCache
   const now = Date.now()
   if (cache && now - cache.lastRunAt < 10 * 60_000) return
 
   globalForRoomSettings.__voicelinkRoomCleanupCache = { lastRunAt: now }
-  const enabled = await getRoomAutoDeleteEnabled(supabase)
+  const enabled = await getRoomAutoDeleteEnabled(store)
   if (!enabled) return
 
-  const cutoff = new Date(now - ROOM_TTL_MS).toISOString()
-  const { error } = await supabase
-    .from("rooms")
-    .delete()
-    .or(`and(${ROOM_ACTIVITY_COLUMN}.is.null,created_at.lt.${cutoff}),${ROOM_ACTIVITY_COLUMN}.lt.${cutoff}`)
-  if (error) {
-    await supabase.from("rooms").delete().lt("created_at", cutoff)
+  if (store.kind === "supabase") {
+    const cutoff = new Date(now - ROOM_TTL_MS).toISOString()
+    const { error } = await store.client
+      .from("rooms")
+      .delete()
+      .or(`and(${ROOM_ACTIVITY_COLUMN}.is.null,created_at.lt.${cutoff}),${ROOM_ACTIVITY_COLUMN}.lt.${cutoff}`)
+    if (error) {
+      await store.client.from("rooms").delete().lt("created_at", cutoff)
+    }
+    return
+  }
+  if (store.kind === "mysql") {
+    const cutoff = new Date(now - ROOM_TTL_MS)
+    await store.client.room.deleteMany({
+      where: {
+        OR: [{ lastActivityAt: { lt: cutoff } }, { createdAt: { lt: cutoff } }],
+      },
+    })
   }
 }
 
-async function cleanupRoomIfExpired(supabase: SupabaseClient, roomId: string): Promise<boolean> {
-  const enabled = await getRoomAutoDeleteEnabled(supabase)
+async function cleanupRoomIfExpired(store: SettingsStore, roomId: string): Promise<boolean> {
+  const enabled = await getRoomAutoDeleteEnabled(store)
   if (!enabled) return false
 
-  const { data, error } = await supabase
-    .from("rooms")
-    .select(`created_at,${ROOM_ACTIVITY_COLUMN}`)
-    .eq("id", roomId)
-    .maybeSingle()
-  if (error) {
-    const fallback = await supabase.from("rooms").select("created_at").eq("id", roomId).maybeSingle()
-    if (fallback.error || !fallback.data) return false
-    const createdAt = (fallback.data as { created_at?: unknown }).created_at
-    if (typeof createdAt !== "string") return false
-    const createdMs = Date.parse(createdAt)
-    if (!Number.isFinite(createdMs)) return false
-    if (Date.now() - createdMs <= ROOM_TTL_MS) return false
-    await supabase.from("rooms").delete().eq("id", roomId)
+  if (store.kind === "supabase") {
+    const { data, error } = await store.client
+      .from("rooms")
+      .select(`created_at,${ROOM_ACTIVITY_COLUMN}`)
+      .eq("id", roomId)
+      .maybeSingle()
+    if (error) {
+      const fallback = await store.client.from("rooms").select("created_at").eq("id", roomId).maybeSingle()
+      if (fallback.error || !fallback.data) return false
+      const createdAt = (fallback.data as { created_at?: unknown }).created_at
+      if (typeof createdAt !== "string") return false
+      const createdMs = Date.parse(createdAt)
+      if (!Number.isFinite(createdMs)) return false
+      if (Date.now() - createdMs <= ROOM_TTL_MS) return false
+      await store.client.from("rooms").delete().eq("id", roomId)
+      return true
+    }
+    if (!data) return false
+
+    const createdAt = (data as { created_at?: unknown }).created_at
+    const lastActivityAt = (data as Record<string, unknown>)[ROOM_ACTIVITY_COLUMN]
+
+    const createdAtStr = typeof createdAt === "string" ? createdAt : null
+    const lastActivityStr = typeof lastActivityAt === "string" ? lastActivityAt : null
+
+    const createdMs = createdAtStr ? Date.parse(createdAtStr) : Number.NaN
+    const lastActivityMs = lastActivityStr ? Date.parse(lastActivityStr) : Number.NaN
+    const effectiveMs = Number.isFinite(lastActivityMs)
+      ? lastActivityMs
+      : Number.isFinite(createdMs)
+        ? createdMs
+        : Number.NaN
+
+    if (!Number.isFinite(effectiveMs)) return false
+    if (Date.now() - effectiveMs <= ROOM_TTL_MS) return false
+
+    await store.client.from("rooms").delete().eq("id", roomId)
     return true
   }
-  if (!data) return false
 
-  const createdAt = (data as { created_at?: unknown }).created_at
-  const lastActivityAt = (data as Record<string, unknown>)[ROOM_ACTIVITY_COLUMN]
+  if (store.kind === "mysql") {
+    const room = await store.client.room.findUnique({
+      where: { id: roomId },
+      select: { createdAt: true, lastActivityAt: true },
+    })
+    if (!room) return false
+    const createdMs = room.createdAt ? room.createdAt.getTime() : Number.NaN
+    const lastActivityMs = room.lastActivityAt ? room.lastActivityAt.getTime() : Number.NaN
+    const effectiveMs = Number.isFinite(lastActivityMs)
+      ? lastActivityMs
+      : Number.isFinite(createdMs)
+        ? createdMs
+        : Number.NaN
+    if (!Number.isFinite(effectiveMs)) return false
+    if (Date.now() - effectiveMs <= ROOM_TTL_MS) return false
+    await store.client.room.delete({ where: { id: roomId } })
+    return true
+  }
 
-  const createdAtStr = typeof createdAt === "string" ? createdAt : null
-  const lastActivityStr = typeof lastActivityAt === "string" ? lastActivityAt : null
-
-  const createdMs = createdAtStr ? Date.parse(createdAtStr) : Number.NaN
-  const lastActivityMs = lastActivityStr ? Date.parse(lastActivityStr) : Number.NaN
-  const effectiveMs = Number.isFinite(lastActivityMs)
-    ? lastActivityMs
-    : Number.isFinite(createdMs)
-      ? createdMs
-      : Number.NaN
-
-  if (!Number.isFinite(effectiveMs)) return false
-  if (Date.now() - effectiveMs <= ROOM_TTL_MS) return false
-
-  await supabase.from("rooms").delete().eq("id", roomId)
-  return true
+  return false
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -206,36 +299,16 @@ function verifyPassword(password: string, saltBase64: string, expectedHashBase64
   return crypto.timingSafeEqual(a, b)
 }
 
-async function getRoomSettings(supabase: SupabaseClient | null, roomId: string): Promise<RoomSettings | null> {
+async function getRoomSettings(store: SettingsStore, roomId: string): Promise<RoomSettings | null> {
   const key = getRoomSettingsKey(roomId)
-  if (!supabase) {
-    const value = getInMemorySettingsStore().get(key) ?? null
-    return parseRoomSettings(value)
-  }
-
-  const { data, error } = await supabase.from("app_settings").select("value").eq("key", key).maybeSingle()
-  if (error || !data) return null
-  return parseRoomSettings((data as { value?: unknown } | null)?.value)
+  const value = await getSettingValue(store, key)
+  return parseRoomSettings(value)
 }
 
-async function setRoomSettings(supabase: SupabaseClient | null, roomId: string, settings: RoomSettings): Promise<void> {
+async function setRoomSettings(store: SettingsStore, roomId: string, settings: RoomSettings): Promise<void> {
   const key = getRoomSettingsKey(roomId)
   const value: RoomSettings = { ...settings, updatedAt: new Date().toISOString() }
-  if (!supabase) {
-    getInMemorySettingsStore().set(key, value)
-    return
-  }
-
-  await supabase
-    .from("app_settings")
-    .upsert(
-      {
-        key,
-        value,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "key" },
-    )
+  await setSettingValue(store, key, value)
 }
 
 function parseMessage(value: unknown): Message | null {
@@ -293,9 +366,9 @@ export async function POST(request: NextRequest) {
     }
 
     const store = getRoomStore()
-    const supabase = getSupabaseClient()
-    if (supabase) {
-      await maybeCleanupExpiredRooms(supabase)
+    const settingsStore = await getSettingsStore()
+    if (settingsStore.kind !== "memory") {
+      await maybeCleanupExpiredRooms(settingsStore)
     }
 
     if (action === "inspect") {
@@ -305,7 +378,7 @@ export async function POST(request: NextRequest) {
       const rid = roomId.trim()
       const [room, settings] = await Promise.all([
         store.getRoom(rid).catch(() => null),
-        getRoomSettings(supabase, rid).catch(() => null),
+        getRoomSettings(settingsStore, rid).catch(() => null),
       ])
       const exists = Boolean(settings) || Boolean(room)
       const joinMode = settings?.joinMode ?? "public"
@@ -338,14 +411,14 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: "Invalid targetLanguage" }, { status: 400 })
       }
 
-      if (supabase) {
-        await cleanupRoomIfExpired(supabase, roomId.trim())
+      if (settingsStore.kind !== "memory") {
+        await cleanupRoomIfExpired(settingsStore, roomId.trim())
       }
 
       const rid = roomId.trim()
       const uid = userId.trim()
       let existingRoom = await store.getRoom(rid).catch(() => null)
-      let settings = await getRoomSettings(supabase, rid).catch(() => null)
+      let settings = await getRoomSettings(settingsStore, rid).catch(() => null)
       const requestedCreateJoinMode = normalizeJoinMode(createJoinMode) ?? null
       const requestedCreatePassword = typeof createPassword === "string" ? createPassword : null
       const joinSessionPolicy = getJoinSessionPolicy()
@@ -363,7 +436,7 @@ export async function POST(request: NextRequest) {
 
         if (settings && getAccountIdFromUserId(settings.adminUserId) === accountId && settings.adminUserId !== uid) {
           const next: RoomSettings = { ...settings, adminUserId: uid }
-          await setRoomSettings(supabase, rid, next)
+          await setRoomSettings(settingsStore, rid, next)
           settings = next
         }
       }
@@ -383,7 +456,7 @@ export async function POST(request: NextRequest) {
           next.passwordSalt = saltBase64
           next.passwordHash = hashBase64
         }
-        await setRoomSettings(supabase, rid, next)
+        await setRoomSettings(settingsStore, rid, next)
         settings = next
       } else {
         if (settings.joinMode === "password") {
@@ -429,8 +502,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: "Invalid userId" }, { status: 400 })
       }
 
-      if (supabase) {
-        const expired = await cleanupRoomIfExpired(supabase, roomId.trim())
+      if (settingsStore.kind !== "memory") {
+        const expired = await cleanupRoomIfExpired(settingsStore, roomId.trim())
         if (expired) {
           return NextResponse.json({ success: false, error: "Room expired" }, { status: 410 })
         }
@@ -449,7 +522,7 @@ export async function POST(request: NextRequest) {
       }
       const rid = roomId.trim()
       const uid = userId.trim()
-      const current = await getRoomSettings(supabase, rid)
+      const current = await getRoomSettings(settingsStore, rid)
       if (!current) {
         return NextResponse.json({ success: false, error: "Room settings not found" }, { status: 404 })
       }
@@ -477,7 +550,7 @@ export async function POST(request: NextRequest) {
           next.passwordHash = hashBase64
         }
       }
-      await setRoomSettings(supabase, rid, next)
+      await setRoomSettings(settingsStore, rid, next)
       return NextResponse.json({ success: true, settings: { adminUserId: next.adminUserId, joinMode: next.joinMode } })
     }
 
@@ -494,7 +567,7 @@ export async function POST(request: NextRequest) {
       const rid = roomId.trim()
       const uid = userId.trim()
       const tid = targetUserId.trim()
-      const settings = await getRoomSettings(supabase, rid)
+      const settings = await getRoomSettings(settingsStore, rid)
       if (!settings) {
         return NextResponse.json({ success: false, error: "Room settings not found" }, { status: 404 })
       }
@@ -505,8 +578,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: "Cannot kick admin" }, { status: 400 })
       }
 
-      if (supabase) {
-        const expired = await cleanupRoomIfExpired(supabase, rid)
+      if (settingsStore.kind !== "memory") {
+        const expired = await cleanupRoomIfExpired(settingsStore, rid)
         if (expired) {
           return NextResponse.json({ success: false, error: "Room expired" }, { status: 410 })
         }
@@ -530,8 +603,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: "Invalid targetLanguage" }, { status: 400 })
       }
 
-      if (supabase) {
-        const expired = await cleanupRoomIfExpired(supabase, roomId.trim())
+      if (settingsStore.kind !== "memory") {
+        const expired = await cleanupRoomIfExpired(settingsStore, roomId.trim())
         if (expired) {
           return NextResponse.json({ success: false, error: "Room expired" }, { status: 410 })
         }
@@ -567,16 +640,19 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: "Invalid message" }, { status: 400 })
       }
 
-      if (supabase) {
-        const expired = await cleanupRoomIfExpired(supabase, roomId.trim())
+      if (settingsStore.kind !== "memory") {
+        const expired = await cleanupRoomIfExpired(settingsStore, roomId.trim())
         if (expired) {
           return NextResponse.json({ success: false, error: "Room expired" }, { status: 410 })
         }
       }
 
       const savedMessage = await store.sendMessage(roomId.trim(), parsedMessage)
-      if (supabase) {
-        await supabase.from("rooms").update({ [ROOM_ACTIVITY_COLUMN]: new Date().toISOString() }).eq("id", roomId.trim())
+      if (settingsStore.kind === "supabase") {
+        await settingsStore.client
+          .from("rooms")
+          .update({ [ROOM_ACTIVITY_COLUMN]: new Date().toISOString() })
+          .eq("id", roomId.trim())
       }
       return NextResponse.json({ success: true, message: savedMessage })
     }
@@ -586,8 +662,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 })
       }
 
-      if (supabase) {
-        const expired = await cleanupRoomIfExpired(supabase, roomId.trim())
+      if (settingsStore.kind !== "memory") {
+        const expired = await cleanupRoomIfExpired(settingsStore, roomId.trim())
         if (expired) {
           return NextResponse.json({ success: false, error: "Room expired" }, { status: 410 })
         }
@@ -598,7 +674,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: "Room not found" }, { status: 404 })
       }
 
-      const settings = await getRoomSettings(supabase, roomId.trim()).catch(() => null)
+      const settings = await getRoomSettings(settingsStore, roomId.trim()).catch(() => null)
       return NextResponse.json({
         success: true,
         room: roomData,

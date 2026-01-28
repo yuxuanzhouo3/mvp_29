@@ -11,6 +11,7 @@ import { createClient } from "@supabase/supabase-js"
 import { format } from "date-fns"
 import { UserActions } from "./user-actions"
 import { CreateUserDialog } from "./create-user-dialog"
+import { getPrisma } from "@/lib/prisma"
 
 export const dynamic = 'force-dynamic';
 
@@ -19,17 +20,31 @@ type ProfileRow = {
   display_name: string | null
   email: string | null
   avatar_url: string | null
-  created_at: string | null
+  created_at: string | Date | null
 } & Record<string, unknown>
 
 export default async function UsersPage() {
+  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
+    .trim()
+    .toLowerCase()
+  const isTencent = target === "tencent"
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   let users: ProfileRow[] = [];
 
   try {
-    if (supabaseUrl && supabaseKey) {
+    if (isTencent) {
+      const prisma = await getPrisma()
+      const data = await prisma.user.findMany({ orderBy: { createdAt: "desc" } })
+      users = data.map((user) => ({
+        id: user.id,
+        display_name: user.name,
+        email: user.email,
+        avatar_url: null,
+        created_at: user.createdAt,
+      }))
+    } else if (supabaseUrl && supabaseKey) {
       // 如果有 Service Role Key (通常在服务端环境变量中)，优先使用它以绕过 RLS
       // 否则使用 Anon Key (受 RLS 限制)
       const key = process.env.SUPABASE_SERVICE_ROLE_KEY || supabaseKey;

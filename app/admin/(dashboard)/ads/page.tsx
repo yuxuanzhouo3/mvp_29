@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { CreateAdDialog } from "./create-ad-dialog"
 import { AdActions } from "./ad-actions"
+import { getPrisma } from "@/lib/prisma"
 
 export const dynamic = "force-dynamic"
 
@@ -22,11 +23,15 @@ type AdRow = {
   image_url: string | null
   link_url: string | null
   is_active: boolean | null
-  created_at: string | null
-  updated_at: string | null
+  created_at: string | Date | null
+  updated_at: string | Date | null
 } & Record<string, unknown>
 
 export default async function AdsPage() {
+  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
+    .trim()
+    .toLowerCase()
+  const isTencent = target === "tencent"
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
@@ -34,7 +39,20 @@ export default async function AdsPage() {
   let loadError: string | null = null
 
   try {
-    if (supabaseUrl && supabaseKey) {
+    if (isTencent) {
+      const prisma = await getPrisma()
+      const data = await prisma.ad.findMany({ orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }] })
+      ads = data.map((ad) => ({
+        id: ad.id,
+        slot_key: ad.slotKey,
+        title: ad.title,
+        image_url: ad.imageUrl,
+        link_url: ad.linkUrl,
+        is_active: ad.isActive,
+        created_at: ad.createdAt,
+        updated_at: ad.updatedAt,
+      }))
+    } else if (supabaseUrl && supabaseKey) {
       const key = process.env.SUPABASE_SERVICE_ROLE_KEY || supabaseKey
       const supabase = createClient(supabaseUrl, key)
 

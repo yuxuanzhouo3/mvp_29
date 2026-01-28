@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { RoomActions } from "./room-actions"
 import { CreateRoomDialog } from "./create-room-dialog"
 import { RoomAutoDeleteToggle } from "./room-auto-delete-toggle"
+import { getPrisma } from "@/lib/prisma"
 
 export const dynamic = 'force-dynamic';
 
@@ -23,14 +24,34 @@ type RoomRow = {
 export default async function RoomsPage() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
+    .trim()
+    .toLowerCase()
+  const isTencent = target === "tencent"
 
   let rooms: RoomRow[] = [];
   let autoDeleteEnabled = false
 
   try {
-    if (supabaseUrl && supabaseKey) {
-      // 如果有 Service Role Key (通常在服务端环境变量中)，优先使用它以绕过 RLS
-      // 否则使用 Anon Key (受 RLS 限制)
+    if (isTencent) {
+      const prisma = await getPrisma()
+      const settingRow = await prisma.appSetting.findUnique({ where: { key: "rooms_auto_delete_after_24h" } })
+      const settingValue = settingRow?.value
+      autoDeleteEnabled =
+        typeof settingValue === "boolean"
+          ? settingValue
+          : typeof settingValue === "object" &&
+              settingValue !== null &&
+              typeof (settingValue as { enabled?: unknown }).enabled === "boolean"
+            ? Boolean((settingValue as { enabled: boolean }).enabled)
+            : false
+
+      const data = await prisma.room.findMany({ orderBy: { createdAt: "desc" } })
+      rooms = data.map((room) => ({
+        id: room.id,
+        created_at: room.createdAt ? room.createdAt.toISOString() : null,
+      }))
+    } else if (supabaseUrl && supabaseKey) {
       const key = process.env.SUPABASE_SERVICE_ROLE_KEY || supabaseKey;
       const supabase = createClient(supabaseUrl, key);
 

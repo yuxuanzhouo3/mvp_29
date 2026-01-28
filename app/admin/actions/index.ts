@@ -2,6 +2,10 @@
 
 import { createClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
+import { getPrisma } from "@/lib/prisma"
+import type { Prisma } from "@prisma/client"
+import bcrypt from "bcryptjs"
+import crypto from "node:crypto"
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -9,9 +13,23 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PU
 // 初始化 Supabase 客户端 (优先使用 Service Role Key)
 const getSupabase = () => createClient(supabaseUrl, supabaseKey)
 
+const isTencentTarget = () => {
+  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
+    .trim()
+    .toLowerCase()
+  return target === "tencent"
+}
+
 // 删除用户
 export async function deleteUser(userId: string) {
   try {
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      await prisma.profile.deleteMany({ where: { id: userId } })
+      await prisma.user.delete({ where: { id: userId } })
+      revalidatePath('/admin/users')
+      return { success: true }
+    }
     const supabase = getSupabase()
 
     // 1. 从 profiles 表删除 (如果设置了外键级联删除，这一步可能就够了)
@@ -39,6 +57,22 @@ export async function deleteUser(userId: string) {
 // 更新用户
 export async function updateUser(userId: string, data: { displayName?: string, email?: string }) {
   try {
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      const updateData: { name?: string; email?: string } = {}
+      if (typeof data.displayName === "string") updateData.name = data.displayName
+      if (typeof data.email === "string") updateData.email = data.email
+      if (Object.keys(updateData).length === 0) {
+        revalidatePath('/admin/users')
+        return { success: true }
+      }
+      await prisma.user.update({
+        where: { id: userId },
+        data: updateData,
+      })
+      revalidatePath('/admin/users')
+      return { success: true }
+    }
     const supabase = getSupabase()
 
     // 更新 profiles 表
@@ -70,6 +104,26 @@ export async function updateUser(userId: string, data: { displayName?: string, e
 // 创建用户
 export async function createUser(data: { email: string, password?: string, displayName?: string }) {
   try {
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      const existing = await prisma.user.findUnique({ where: { email: data.email } })
+      if (existing) {
+        return { success: false, error: "User already exists" }
+      }
+      const rawPassword = data.password && data.password.trim() ? data.password : "12345678"
+      const hashedPassword = await bcrypt.hash(rawPassword, 10)
+      const displayName = data.displayName && data.displayName.trim() ? data.displayName : data.email.split("@")[0]
+      const user = await prisma.user.create({
+        data: {
+          id: crypto.randomUUID(),
+          email: data.email,
+          name: displayName,
+          password: hashedPassword,
+        },
+      })
+      revalidatePath('/admin/users')
+      return { success: true, userId: user.id }
+    }
     const supabase = getSupabase()
 
     // 1. 创建 auth 用户
@@ -116,21 +170,35 @@ export async function createUser(data: { email: string, password?: string, displ
 // 创建房间
 export async function createRoom(name: string) {
   try {
-    const supabase = getSupabase()
-
-    const now = new Date().toISOString()
-    const preferred = await supabase.from("rooms").insert({
-      name: name,
-      created_at: now,
-      last_activity_at: now,
-    })
-
-    if (preferred.error) {
-      const fallback = await supabase.from("rooms").insert({
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      await prisma.room.upsert({
+        where: { id: name },
+        create: {
+          id: name,
+          createdAt: new Date(),
+          lastActivityAt: new Date(),
+        },
+        update: {
+          lastActivityAt: new Date(),
+        },
+      })
+    } else {
+      const supabase = getSupabase()
+      const now = new Date().toISOString()
+      const preferred = await supabase.from("rooms").insert({
         name: name,
         created_at: now,
+        last_activity_at: now,
       })
-      if (fallback.error) throw fallback.error
+
+      if (preferred.error) {
+        const fallback = await supabase.from("rooms").insert({
+          name: name,
+          created_at: now,
+        })
+        if (fallback.error) throw fallback.error
+      }
     }
 
     revalidatePath('/admin/rooms')
@@ -144,14 +212,18 @@ export async function createRoom(name: string) {
 // 删除房间
 export async function deleteRoom(roomId: string) {
   try {
-    const supabase = getSupabase()
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      await prisma.room.delete({ where: { id: roomId } })
+    } else {
+      const supabase = getSupabase()
+      const { error } = await supabase
+        .from('rooms')
+        .delete()
+        .eq('id', roomId)
 
-    const { error } = await supabase
-      .from('rooms')
-      .delete()
-      .eq('id', roomId)
-
-    if (error) throw error
+      if (error) throw error
+    }
 
     revalidatePath('/admin/rooms')
     return { success: true }
@@ -163,20 +235,33 @@ export async function deleteRoom(roomId: string) {
 
 export async function createAd(data: { slotKey: string; title: string; imageUrl?: string; linkUrl?: string; isActive: boolean }) {
   try {
-    const supabase = getSupabase()
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      await prisma.ad.create({
+        data: {
+          slotKey: data.slotKey,
+          title: data.title,
+          imageUrl: data.imageUrl || null,
+          linkUrl: data.linkUrl || null,
+          isActive: data.isActive,
+        },
+      })
+    } else {
+      const supabase = getSupabase()
 
-    const now = new Date().toISOString()
-    const { error } = await supabase.from("ads").insert({
-      slot_key: data.slotKey,
-      title: data.title,
-      image_url: data.imageUrl || null,
-      link_url: data.linkUrl || null,
-      is_active: data.isActive,
-      created_at: now,
-      updated_at: now,
-    })
+      const now = new Date().toISOString()
+      const { error } = await supabase.from("ads").insert({
+        slot_key: data.slotKey,
+        title: data.title,
+        image_url: data.imageUrl || null,
+        link_url: data.linkUrl || null,
+        is_active: data.isActive,
+        created_at: now,
+        updated_at: now,
+      })
 
-    if (error) throw error
+      if (error) throw error
+    }
     revalidatePath("/admin/ads")
     return { success: true }
   } catch (error: unknown) {
@@ -190,21 +275,35 @@ export async function updateAd(
   data: { slotKey: string; title: string; imageUrl?: string; linkUrl?: string; isActive: boolean },
 ) {
   try {
-    const supabase = getSupabase()
-
-    const { error } = await supabase
-      .from("ads")
-      .update({
-        slot_key: data.slotKey,
-        title: data.title,
-        image_url: data.imageUrl || null,
-        link_url: data.linkUrl || null,
-        is_active: data.isActive,
-        updated_at: new Date().toISOString(),
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      await prisma.ad.update({
+        where: { id: adId },
+        data: {
+          slotKey: data.slotKey,
+          title: data.title,
+          imageUrl: data.imageUrl || null,
+          linkUrl: data.linkUrl || null,
+          isActive: data.isActive,
+        },
       })
-      .eq("id", adId)
+    } else {
+      const supabase = getSupabase()
 
-    if (error) throw error
+      const { error } = await supabase
+        .from("ads")
+        .update({
+          slot_key: data.slotKey,
+          title: data.title,
+          image_url: data.imageUrl || null,
+          link_url: data.linkUrl || null,
+          is_active: data.isActive,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", adId)
+
+      if (error) throw error
+    }
     revalidatePath("/admin/ads")
     return { success: true }
   } catch (error: unknown) {
@@ -215,13 +314,21 @@ export async function updateAd(
 
 export async function setAdActive(adId: string, isActive: boolean) {
   try {
-    const supabase = getSupabase()
-    const { error } = await supabase
-      .from("ads")
-      .update({ is_active: isActive, updated_at: new Date().toISOString() })
-      .eq("id", adId)
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      await prisma.ad.update({
+        where: { id: adId },
+        data: { isActive },
+      })
+    } else {
+      const supabase = getSupabase()
+      const { error } = await supabase
+        .from("ads")
+        .update({ is_active: isActive, updated_at: new Date().toISOString() })
+        .eq("id", adId)
 
-    if (error) throw error
+      if (error) throw error
+    }
     revalidatePath("/admin/ads")
     return { success: true }
   } catch (error: unknown) {
@@ -232,9 +339,14 @@ export async function setAdActive(adId: string, isActive: boolean) {
 
 export async function deleteAd(adId: string) {
   try {
-    const supabase = getSupabase()
-    const { error } = await supabase.from("ads").delete().eq("id", adId)
-    if (error) throw error
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      await prisma.ad.delete({ where: { id: adId } })
+    } else {
+      const supabase = getSupabase()
+      const { error } = await supabase.from("ads").delete().eq("id", adId)
+      if (error) throw error
+    }
     revalidatePath("/admin/ads")
     return { success: true }
   } catch (error: unknown) {
@@ -247,6 +359,19 @@ const ROOM_AUTO_DELETE_SETTING_KEY = "rooms_auto_delete_after_24h"
 
 export async function getRoomsAutoDeleteEnabled() {
   try {
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      const row = await prisma.appSetting.findUnique({ where: { key: ROOM_AUTO_DELETE_SETTING_KEY } })
+      const value = row?.value
+      const enabled =
+        typeof value === "boolean"
+          ? value
+          : typeof value === "object" && value !== null && typeof (value as { enabled?: unknown }).enabled === "boolean"
+            ? Boolean((value as { enabled: boolean }).enabled)
+            : false
+      return { success: true, enabled }
+    }
+
     const supabase = getSupabase()
     const { data, error } = await supabase
       .from("app_settings")
@@ -272,19 +397,29 @@ export async function getRoomsAutoDeleteEnabled() {
 
 export async function setRoomsAutoDeleteEnabled(enabled: boolean) {
   try {
-    const supabase = getSupabase()
-    const { error } = await supabase
-      .from("app_settings")
-      .upsert(
-        {
-          key: ROOM_AUTO_DELETE_SETTING_KEY,
-          value: Boolean(enabled),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "key" },
-      )
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      const value = Boolean(enabled) as Prisma.InputJsonValue
+      await prisma.appSetting.upsert({
+        where: { key: ROOM_AUTO_DELETE_SETTING_KEY },
+        create: { key: ROOM_AUTO_DELETE_SETTING_KEY, value },
+        update: { value },
+      })
+    } else {
+      const supabase = getSupabase()
+      const { error } = await supabase
+        .from("app_settings")
+        .upsert(
+          {
+            key: ROOM_AUTO_DELETE_SETTING_KEY,
+            value: Boolean(enabled),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "key" },
+        )
 
-    if (error) throw error
+      if (error) throw error
+    }
 
     revalidatePath("/admin/rooms")
     return { success: true }

@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js"
+import { getPrisma } from "@/lib/prisma"
 
 export const dynamic = "force-dynamic"
 
@@ -13,11 +14,46 @@ type AdRow = {
   created_at: string | null
 }
 
+function isTencentTarget(): boolean {
+  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
+    .trim()
+    .toLowerCase()
+  return target === "tencent"
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url)
   const slotKey = url.searchParams.get("slotKey")?.trim() || null
   const limitParam = url.searchParams.get("limit")?.trim()
   const limit = limitParam ? Math.max(1, Math.min(20, Number(limitParam) || 1)) : 10
+
+  if (isTencentTarget()) {
+    const prisma = await getPrisma()
+    const ads = await prisma.ad.findMany({
+      where: {
+        isActive: true,
+        ...(slotKey ? { slotKey } : {}),
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: limit,
+    })
+    return Response.json(
+      {
+        ads: ads.map((ad) => ({
+          id: ad.id,
+          slotKey: ad.slotKey,
+          title: ad.title,
+          imageUrl: ad.imageUrl,
+          linkUrl: ad.linkUrl,
+        })),
+      },
+      {
+        headers: {
+          "Cache-Control": "no-store",
+        },
+      },
+    )
+  }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -61,4 +97,3 @@ export async function GET(req: Request) {
     },
   )
 }
-

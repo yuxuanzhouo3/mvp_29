@@ -2,6 +2,7 @@ import { RoomStore } from "./types"
 import { MemoryRoomStore } from "./memory"
 import { SupabaseRoomStore } from "./supabase"
 import { CloudBaseRoomStore } from "./cloudbase"
+import { MysqlRoomStore } from "./mysql"
 
 let storeInstance: RoomStore | null = null
 
@@ -19,6 +20,11 @@ export function getRoomStore(): RoomStore {
     storeInstance = new CloudBaseRoomStore()
     return storeInstance
   }
+  if (process.env.DB_PROVIDER === 'mysql') {
+    console.log("[RoomStore] Using MySQL (Explicit)")
+    storeInstance = new MysqlRoomStore()
+    return storeInstance
+  }
   if (process.env.DB_PROVIDER === 'memory') {
     console.log("[RoomStore] Using Memory (Explicit)")
     storeInstance = new MemoryRoomStore()
@@ -26,6 +32,18 @@ export function getRoomStore(): RoomStore {
   }
 
   // 2. Auto-detect Platform
+  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
+    .trim()
+    .toLowerCase()
+  if (target === "tencent") {
+    console.log("[RoomStore] Detected Tencent Target - Using MySQL")
+    try {
+      storeInstance = new MysqlRoomStore()
+      return storeInstance
+    } catch (e) {
+      console.warn("[RoomStore] Failed to initialize MySQL, falling back:", e)
+    }
+  }
   // Vercel deployment -> Supabase
   if (process.env.VERCEL) {
     console.log("[RoomStore] Detected Vercel Environment - Using Supabase")
