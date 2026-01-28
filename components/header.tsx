@@ -27,12 +27,22 @@ export function Header({ onClearChat, messageCount = 0, onSettingsChange, roomId
   const router = useRouter()
   const { locale, setLocale, t } = useI18n()
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
+  const isTencent = process.env.NEXT_PUBLIC_DEPLOY_TARGET === "tencent"
   const currentLocale = UI_LOCALES.find((l) => l.value === locale) ?? UI_LOCALES[0]
   const persistLocale = async (next: UiLocale) => {
     const prev = locale
     setLocale(next)
     if (!user) return
     try {
+      if (isTencent) {
+        const res = await fetch("/api/user/locale", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user.id, email: user.email, uiLocale: next }),
+        })
+        if (!res.ok) throw new Error("Save locale failed")
+        return
+      }
       const supabase = getSupabaseBrowserClient()
       const { error } = await supabase.auth.updateUser({ data: { ui_locale: next } })
       if (error) throw error

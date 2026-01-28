@@ -154,10 +154,18 @@ export function RoomJoin({ onJoin }: RoomJoinProps) {
     const prev = locale
     setLocale(nextLocale)
 
-    if (!user || isTencent) return
-
     setIsSavingLocale(true)
     try {
+      if (user && isTencent) {
+        const res = await fetch("/api/user/locale", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user.id, email: user.email, uiLocale: nextLocale }),
+        })
+        if (!res.ok) throw new Error("Save locale failed")
+        return
+      }
+      if (!user) return
       const supabase = getSupabaseBrowserClient()
       const { error } = await supabase.auth.updateUser({ data: { ui_locale: nextLocale } })
       if (error) throw error
