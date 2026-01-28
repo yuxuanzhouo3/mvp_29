@@ -193,7 +193,21 @@ export function SettingsDialog({ onSettingsChange }: SettingsDialogProps) {
       if (!response.ok || !data?.url) {
         throw new Error(data?.error || t("settings.payFailedDesc"))
       }
-      window.location.href = data.url as string
+      const payloadUrl = String(data.url)
+      if (payloadUrl.includes("<form")) {
+        const target = window.open("", "_self")
+        if (target) {
+          target.document.open()
+          target.document.write(payloadUrl)
+          target.document.close()
+        } else {
+          document.open()
+          document.write(payloadUrl)
+          document.close()
+        }
+      } else {
+        window.location.href = payloadUrl
+      }
     } catch (e) {
       toast({
         title: t("settings.payFailedTitle"),

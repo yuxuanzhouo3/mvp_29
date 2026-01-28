@@ -1,4 +1,4 @@
-const AlipaySdk: any = require("alipay-sdk")
+import { AlipaySdk } from "alipay-sdk"
 
 function resolveEnvValue(key: string, tencentKey: string): string | undefined {
   const env = process.env as Record<string, string | undefined>

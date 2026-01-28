@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
         [crypto.randomUUID(), userId, amount.toFixed(2), subject, "pending", "alipay", outTradeNo, null]
       )
     } else {
-      const prisma = await getPrisma()
+      const prisma = (await getPrisma()) as any
       await prisma.order.create({
         data: {
           userId,
@@ -60,9 +60,13 @@ export async function POST(request: NextRequest) {
     const notifyUrl = getAlipayNotifyUrl() || `${origin}/api/pay/alipay/notify`
     const returnUrl = getAlipayReturnUrl() || `${origin}/pay/result`
 
-    const sdk = getAlipaySdk()
+    const sdk = getAlipaySdk() as any
+    const userAgent = request.headers.get("user-agent") ?? ""
+    const isMobile = /mobile|android|iphone|ipad|ipod/i.test(userAgent)
+    const apiMethod = isMobile ? "alipay.trade.wap.pay" : "alipay.trade.page.pay"
+    const productCode = isMobile ? "QUICK_WAP_PAY" : "FAST_INSTANT_TRADE_PAY"
     const url = await sdk.pageExecute(
-      "alipay.trade.wap.pay",
+      apiMethod,
       {
         notifyUrl,
         returnUrl,
@@ -70,7 +74,7 @@ export async function POST(request: NextRequest) {
           out_trade_no: outTradeNo,
           total_amount: amount.toFixed(2),
           subject,
-          product_code: "QUICK_WAP_PAY",
+          product_code: productCode,
         },
       },
       { method: "GET" }
