@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { getRoomStore } from "@/lib/store"
 import type { Message } from "@/lib/store/types"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
-import type { Prisma } from "@prisma/client"
+import { Prisma } from "@prisma/client"
 import { getPrisma } from "@/lib/prisma"
 import crypto from "node:crypto"
 
@@ -91,11 +91,13 @@ async function setSettingValue(store: SettingsStore, key: string, value: unknown
   }
   if (store.kind === "mysql") {
     const nextValue = value as Prisma.InputJsonValue
-    await store.client.appSetting.upsert({
-      where: { key },
-      create: { key, value: nextValue },
-      update: { value: nextValue },
-    })
+    await store.client.$executeRaw(
+      Prisma.sql`
+        INSERT INTO app_settings (\`key\`, \`value\`, updated_at, _openid)
+        VALUES (${key}, CAST(${JSON.stringify(nextValue)} AS JSON), NOW(), '')
+        ON DUPLICATE KEY UPDATE \`value\` = VALUES(\`value\`), updated_at = VALUES(updated_at)
+      `
+    )
     return
   }
   getInMemorySettingsStore().set(key, value)
