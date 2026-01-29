@@ -1,9 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getRoomStore } from "@/lib/store"
+import { MemoryRoomStore } from "@/lib/store/memory"
 import type { Message } from "@/lib/store/types"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { Prisma } from "@prisma/client"
-import { getPrisma } from "@/lib/prisma"
+import { getMariaPool, getPrisma } from "@/lib/prisma"
 import crypto from "node:crypto"
 
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000
@@ -23,6 +24,7 @@ const globalForRoomSettings = globalThis as unknown as {
   __voicelinkRoomAutoDeleteCache?: SettingsCache
   __voicelinkRoomCleanupCache?: CleanupCache
   __voicelinkRoomJoinSettings?: Map<string, unknown>
+  __voicelinkAppSettingsOpenid?: { value: boolean; fetchedAt: number }
 }
 
 function isTencentTarget(): boolean {
@@ -42,6 +44,32 @@ function getSupabaseClient(): SupabaseClient | null {
 
   if (!supabaseUrl || !supabaseKey) return null
   return createClient(supabaseUrl, supabaseKey)
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Timeout")), ms)
+    promise
+      .then((value) => {
+        clearTimeout(timer)
+        resolve(value)
+      })
+      .catch((err) => {
+        clearTimeout(timer)
+        reject(err)
+      })
+  })
+}
+
+async function isMariaDbReady(timeoutMs: number): Promise<boolean> {
+  try {
+    const pool = await withTimeout(getMariaPool(), timeoutMs)
+    await withTimeout(pool.query("SELECT 1"), timeoutMs)
+    return true
+  } catch (e) {
+    console.error("[Rooms API] MariaDB not ready:", e)
+    return false
+  }
 }
 
 async function getSettingsStore(): Promise<SettingsStore> {
@@ -77,6 +105,8 @@ async function getSettingValue(store: SettingsStore, key: string): Promise<unkno
 
 async function ensureAppSettingsOpenidColumn(client: MysqlClient): Promise<boolean> {
   try {
+    const cached = globalForRoomSettings.__voicelinkAppSettingsOpenid
+    if (cached && Date.now() - cached.fetchedAt < 10 * 60_000) return cached.value
     const rows = await client.$queryRaw<{ cnt?: number | bigint }[]>(
       Prisma.sql`SELECT COUNT(*) as cnt FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'app_settings' AND column_name = '_openid'`
     )
@@ -84,9 +114,11 @@ async function ensureAppSettingsOpenidColumn(client: MysqlClient): Promise<boole
     if (count === 0) {
       await client.$executeRaw(Prisma.sql`ALTER TABLE app_settings ADD COLUMN \`_openid\` VARCHAR(64) DEFAULT '' NOT NULL`)
     }
+    globalForRoomSettings.__voicelinkAppSettingsOpenid = { value: true, fetchedAt: Date.now() }
     return true
   } catch (e) {
     console.error("[Rooms API] ensure app_settings _openid failed:", e)
+    globalForRoomSettings.__voicelinkAppSettingsOpenid = { value: false, fetchedAt: Date.now() }
     return false
   }
 }
@@ -394,13 +426,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Invalid action" }, { status: 400 })
     }
 
-    const store = getRoomStore()
+    let store = getRoomStore()
     let settingsStore: SettingsStore
     try {
       settingsStore = await getSettingsStore()
     } catch (e) {
       console.error("[Rooms API] Failed to get settings store, falling back to memory:", e)
       settingsStore = { kind: "memory" }
+    }
+    if (isTencentTarget()) {
+      const ready = await isMariaDbReady(2500)
+      if (!ready) {
+        store = new MemoryRoomStore()
+        settingsStore = { kind: "memory" }
+      }
     }
     if (settingsStore.kind !== "memory") {
       try {

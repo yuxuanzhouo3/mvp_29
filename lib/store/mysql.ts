@@ -2,18 +2,39 @@ import { getMariaPool } from "@/lib/prisma"
 import { RoomStore, RoomData, User, Message } from "./types"
 import crypto from "node:crypto"
 
+const globalForMysql = globalThis as unknown as {
+  __voicelinkOpenidColumnCache?: Map<string, { value: boolean; checkedAt: number }>
+}
+
+const OPENID_CACHE_TTL_MS = 10 * 60_000
+
 export class MysqlRoomStore implements RoomStore {
   private async ensureOpenidColumn(pool: any, tableName: string): Promise<void> {
     try {
+      if (!globalForMysql.__voicelinkOpenidColumnCache) {
+        globalForMysql.__voicelinkOpenidColumnCache = new Map()
+      }
+      const cache = globalForMysql.__voicelinkOpenidColumnCache
+      const cached = cache.get(tableName)
+      if (cached && Date.now() - cached.checkedAt < OPENID_CACHE_TTL_MS) {
+        if (cached.value) return
+      }
       const rows = await pool.query(
         `SELECT COUNT(*) as cnt FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '${tableName}' AND column_name = '_openid'`
       )
       const count = Array.isArray(rows) && rows.length > 0 ? Number(rows[0].cnt || 0) : 0
-      if (count === 0) {
+      let exists = count > 0
+      if (!exists) {
         await pool.query(`ALTER TABLE \`${tableName}\` ADD COLUMN \`_openid\` VARCHAR(64) DEFAULT '' NOT NULL`)
+        exists = true
       }
+      cache.set(tableName, { value: exists, checkedAt: Date.now() })
     } catch (e) {
       console.warn(`[MysqlRoomStore] Failed to ensure _openid on ${tableName}:`, e)
+      if (!globalForMysql.__voicelinkOpenidColumnCache) {
+        globalForMysql.__voicelinkOpenidColumnCache = new Map()
+      }
+      globalForMysql.__voicelinkOpenidColumnCache.set(tableName, { value: false, checkedAt: Date.now() })
     }
   }
 
