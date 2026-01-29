@@ -18,17 +18,23 @@ const resolveLocale = (value: unknown): UiLocale | null => {
   return exists ? normalized : null
 }
 
-const ensureUserLocaleColumn = async () => {
-  const pool = await getMariaPool()
-  const rows = await pool.query(
-    "SELECT COUNT(*) as cnt FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'User' AND column_name = 'uiLocale'"
-  )
-  const count =
-    Array.isArray(rows) && rows.length > 0
-      ? Number((rows[0] as { cnt?: number | string }).cnt ?? 0)
-      : 0
-  if (count > 0) return
-  await pool.query("ALTER TABLE `User` ADD COLUMN uiLocale VARCHAR(10) NULL")
+const ensureUserLocaleColumn = async (allowAlter: boolean): Promise<boolean> => {
+  try {
+    const pool = await getMariaPool()
+    const rows = await pool.query(
+      "SELECT COUNT(*) as cnt FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'User' AND column_name = 'uiLocale'"
+    )
+    const count =
+      Array.isArray(rows) && rows.length > 0
+        ? Number((rows[0] as { cnt?: number | string }).cnt ?? 0)
+        : 0
+    if (count > 0) return true
+    if (!allowAlter) return false
+    await pool.query("ALTER TABLE `User` ADD COLUMN uiLocale VARCHAR(10) NULL")
+    return true
+  } catch {
+    return false
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -42,7 +48,10 @@ export async function GET(request: NextRequest) {
     if (!userId && !email) {
       return NextResponse.json({ success: false, error: "Missing userId or email" }, { status: 400 })
     }
-    await ensureUserLocaleColumn()
+    const hasColumn = await ensureUserLocaleColumn(false)
+    if (!hasColumn) {
+      return NextResponse.json({ success: true, uiLocale: null })
+    }
     const pool = await getMariaPool()
     const rows = await pool.query(
       userId
@@ -74,7 +83,10 @@ export async function POST(request: NextRequest) {
     if (!uiLocale) {
       return NextResponse.json({ success: false, error: "Invalid uiLocale" }, { status: 400 })
     }
-    await ensureUserLocaleColumn()
+    const hasColumn = await ensureUserLocaleColumn(process.env.NODE_ENV !== "production")
+    if (!hasColumn) {
+      return NextResponse.json({ success: false, uiLocale })
+    }
     const pool = await getMariaPool()
     if (userId) {
       await pool.query("UPDATE `User` SET uiLocale = ?, updatedAt = NOW() WHERE id = ? LIMIT 1", [
