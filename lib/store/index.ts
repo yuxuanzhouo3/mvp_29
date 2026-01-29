@@ -41,7 +41,8 @@ export function getRoomStore(): RoomStore {
       storeInstance = new MysqlRoomStore()
       return storeInstance
     } catch (e) {
-      console.warn("[RoomStore] Failed to initialize MySQL, falling back:", e)
+      console.error("[RoomStore] Failed to initialize MySQL:", e)
+      throw e
     }
   }
   // Vercel deployment -> Supabase

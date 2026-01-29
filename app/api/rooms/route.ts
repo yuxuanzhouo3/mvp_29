@@ -1,6 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getRoomStore } from "@/lib/store"
-import { MemoryRoomStore } from "@/lib/store/memory"
 import type { Message } from "@/lib/store/types"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { Prisma } from "@prisma/client"
@@ -437,8 +436,7 @@ export async function POST(request: NextRequest) {
     if (isTencentTarget()) {
       const ready = await isMariaDbReady(2500)
       if (!ready) {
-        store = new MemoryRoomStore()
-        settingsStore = { kind: "memory" }
+        return NextResponse.json({ success: false, error: "Database not ready" }, { status: 503 })
       }
     }
     if (settingsStore.kind !== "memory") {
