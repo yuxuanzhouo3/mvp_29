@@ -7,15 +7,22 @@ import { useI18n } from "@/components/i18n-provider"
 import { UiLanguageSelector } from "@/components/ui-language-selector"
 import { Button } from "@/components/ui/button"
 import { useRouter } from "next/navigation"
+import { useAuth } from "@/components/auth-provider"
 
 export function Dashboard() {
   const { t } = useI18n()
   const router = useRouter()
+  const { signOut } = useAuth()
+
+  const handleBack = async () => {
+    await signOut()
+    router.push("/login")
+  }
 
   return (
     <div className="container mx-auto p-4 md:p-8 min-h-screen flex flex-col max-w-4xl">
       <div className="flex justify-between items-center mb-8">
-        <Button variant="ghost" size="sm" className="gap-2" onClick={() => router.back()}>
+        <Button variant="ghost" size="sm" className="gap-2" onClick={handleBack}>
           <ArrowLeft className="w-4 h-4" />
           {t("common.back")}
         </Button>

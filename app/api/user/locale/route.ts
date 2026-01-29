@@ -54,10 +54,10 @@ export async function GET(request: NextRequest) {
     }
     const pool = await getMariaPool()
     const rows = await pool.query(
-      userId
-        ? "SELECT uiLocale FROM `User` WHERE id = ? LIMIT 1"
-        : "SELECT uiLocale FROM `User` WHERE email = ? LIMIT 1",
-      [userId || email]
+      email
+        ? "SELECT uiLocale FROM `User` WHERE email = ? LIMIT 1"
+        : "SELECT uiLocale FROM `User` WHERE id = ? LIMIT 1",
+      [email || userId]
     )
     const user = Array.isArray(rows) && rows.length > 0 ? rows[0] : null
     const uiLocale = user?.uiLocale ?? null
@@ -88,15 +88,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, uiLocale })
     }
     const pool = await getMariaPool()
-    if (userId) {
-      await pool.query("UPDATE `User` SET uiLocale = ?, updatedAt = NOW() WHERE id = ? LIMIT 1", [
-        uiLocale,
-        userId,
-      ])
-    } else {
+    if (email) {
       await pool.query("UPDATE `User` SET uiLocale = ?, updatedAt = NOW() WHERE email = ? LIMIT 1", [
         uiLocale,
         email,
+      ])
+    } else {
+      await pool.query("UPDATE `User` SET uiLocale = ?, updatedAt = NOW() WHERE id = ? LIMIT 1", [
+        uiLocale,
+        userId,
       ])
     }
     return NextResponse.json({ success: true, uiLocale })

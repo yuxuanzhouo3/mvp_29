@@ -3,6 +3,7 @@
 import type React from "react"
 
 import { useEffect, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -28,6 +29,7 @@ type RoomJoinProps = {
 
 export function RoomJoin({ onJoin }: RoomJoinProps) {
   const { profile, user, signOut, updateProfile } = useAuth()
+  const router = useRouter()
   const { toast } = useToast()
   const { locale, setLocale, t } = useI18n()
   const isTencent = process.env.NEXT_PUBLIC_DEPLOY_TARGET === "tencent"
@@ -343,11 +345,11 @@ export function RoomJoin({ onJoin }: RoomJoinProps) {
 
           <Button
             variant="ghost"
-            onClick={() => signOut()}
+            onClick={() => router.push("/")}
             className="w-full text-muted-foreground hover:text-destructive mt-4"
           >
             <LogOut className="w-4 h-4 mr-2" />
-            {t("common.logout")}
+            {t("common.back")}
           </Button>
         </CardContent>
       </Card>
