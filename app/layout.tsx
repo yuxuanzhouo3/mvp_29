@@ -27,7 +27,7 @@ export default function RootLayout({
         </AuthProvider>
         <Toaster />
         <SonnerToaster />
-        <Analytics />
+        {process.env.NEXT_PUBLIC_DEPLOY_TARGET !== 'tencent' && <Analytics />}
       </body>
     </html>
   )

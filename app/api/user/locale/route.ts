@@ -21,18 +21,26 @@ const resolveLocale = (value: unknown): UiLocale | null => {
 const ensureUserLocaleColumn = async (allowAlter: boolean): Promise<boolean> => {
   try {
     const pool = await getMariaPool()
-    const rows = await pool.query(
-      "SELECT COUNT(*) as cnt FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'User' AND column_name = 'uiLocale'"
+    const columnsRows = await pool.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'User'"
     )
-    const count =
-      Array.isArray(rows) && rows.length > 0
-        ? Number((rows[0] as { cnt?: number | string }).cnt ?? 0)
-        : 0
-    if (count > 0) return true
-    if (!allowAlter) return false
-    await pool.query("ALTER TABLE `User` ADD COLUMN uiLocale VARCHAR(10) NULL")
+    const columns = (Array.isArray(columnsRows) ? columnsRows : []).map((c: any) => String(c.column_name || c.COLUMN_NAME || "").toLowerCase())
+
+    const hasLocale = columns.includes("uilocale")
+    const hasOpenid = columns.includes("_openid")
+
+    if (hasLocale && hasOpenid) return true
+    if (!allowAlter) return hasLocale && hasOpenid
+
+    if (!hasLocale) {
+      await pool.query("ALTER TABLE `User` ADD COLUMN uiLocale VARCHAR(10) NULL")
+    }
+    if (!hasOpenid) {
+      await pool.query("ALTER TABLE `User` ADD COLUMN `_openid` VARCHAR(64) DEFAULT '' NOT NULL")
+    }
     return true
-  } catch {
+  } catch (e) {
+    console.error("[Locale API] ensureUserLocaleColumn error:", e)
     return false
   }
 }
@@ -48,8 +56,9 @@ export async function GET(request: NextRequest) {
     if (!userId && !email) {
       return NextResponse.json({ success: false, error: "Missing userId or email" }, { status: 400 })
     }
-    const hasColumn = await ensureUserLocaleColumn(false)
+    const hasColumn = await ensureUserLocaleColumn(true)
     if (!hasColumn) {
+      console.warn("[Locale API] uiLocale column does not exist and could not be created")
       return NextResponse.json({ success: true, uiLocale: null })
     }
     const pool = await getMariaPool()
@@ -83,8 +92,9 @@ export async function POST(request: NextRequest) {
     if (!uiLocale) {
       return NextResponse.json({ success: false, error: "Invalid uiLocale" }, { status: 400 })
     }
-    const hasColumn = await ensureUserLocaleColumn(process.env.NODE_ENV !== "production")
+    const hasColumn = await ensureUserLocaleColumn(true)
     if (!hasColumn) {
+      console.error("[Locale API] uiLocale column does not exist and could not be created")
       return NextResponse.json({ success: false, uiLocale })
     }
     const pool = await getMariaPool()

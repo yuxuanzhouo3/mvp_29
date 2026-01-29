@@ -368,9 +368,19 @@ export async function POST(request: NextRequest) {
     }
 
     const store = getRoomStore()
-    const settingsStore = await getSettingsStore()
+    let settingsStore: SettingsStore
+    try {
+      settingsStore = await getSettingsStore()
+    } catch (e) {
+      console.error("[Rooms API] Failed to get settings store, falling back to memory:", e)
+      settingsStore = { kind: "memory" }
+    }
     if (settingsStore.kind !== "memory") {
-      await maybeCleanupExpiredRooms(settingsStore)
+      try {
+        await maybeCleanupExpiredRooms(settingsStore)
+      } catch (e) {
+        console.error("[Rooms API] Cleanup error:", e)
+      }
     }
 
     if (action === "inspect") {
@@ -378,28 +388,34 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 })
       }
       const rid = roomId.trim()
-      const [room, settings] = await Promise.all([
-        store.getRoom(rid).catch(() => null),
-        getRoomSettings(settingsStore, rid).catch(() => null),
-      ])
-      const exists = Boolean(settings) || Boolean(room)
-      const joinMode = settings?.joinMode ?? "public"
-      const requiresPassword = joinMode === "password"
-      return NextResponse.json({
-        success: true,
-        exists,
-        settings: settings
-          ? { adminUserId: settings.adminUserId, joinMode: settings.joinMode, requiresPassword }
-          : exists
-            ? { adminUserId: room?.users?.[0]?.id ?? null, joinMode, requiresPassword }
-            : null,
-      })
+      try {
+        const [room, settings] = await Promise.all([
+          store.getRoom(rid).catch(() => null),
+          getRoomSettings(settingsStore, rid).catch(() => null),
+        ])
+        const exists = Boolean(settings) || Boolean(room)
+        const joinMode = settings?.joinMode ?? "public"
+        const requiresPassword = joinMode === "password"
+        return NextResponse.json({
+          success: true,
+          exists,
+          settings: settings
+            ? { adminUserId: settings.adminUserId, joinMode: settings.joinMode, requiresPassword }
+            : exists
+              ? { adminUserId: room?.users?.[0]?.id ?? null, joinMode, requiresPassword }
+              : null,
+        })
+      } catch (e) {
+        console.error("[Rooms API] Inspect error:", e)
+        return NextResponse.json({ success: false, error: "Inspect failed" }, { status: 500 })
+      }
     }
 
     if (action === "join") {
       if (typeof roomId !== "string" || roomId.trim().length === 0) {
         return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 })
       }
+      // ... existing checks ...
       if (typeof userId !== "string" || userId.trim().length === 0) {
         return NextResponse.json({ success: false, error: "Invalid userId" }, { status: 400 })
       }
@@ -413,87 +429,100 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: "Invalid targetLanguage" }, { status: 400 })
       }
 
-      if (settingsStore.kind !== "memory") {
-        await cleanupRoomIfExpired(settingsStore, roomId.trim())
-      }
-
       const rid = roomId.trim()
       const uid = userId.trim()
-      let existingRoom = await store.getRoom(rid).catch(() => null)
-      let settings = await getRoomSettings(settingsStore, rid).catch(() => null)
-      const requestedCreateJoinMode = normalizeJoinMode(createJoinMode) ?? null
-      const requestedCreatePassword = typeof createPassword === "string" ? createPassword : null
-      const joinSessionPolicy = getJoinSessionPolicy()
-      const accountId = getAccountIdFromUserId(uid)
 
-      if (joinSessionPolicy === "single_account" && accountId && existingRoom?.users?.length) {
-        const staleUserIds = existingRoom.users
-          .map((u) => u.id)
-          .filter((id) => id !== uid && getAccountIdFromUserId(id) === accountId)
+      if (settingsStore.kind !== "memory") {
+        try {
+          await cleanupRoomIfExpired(settingsStore, rid)
+        } catch (e) {
+          console.error("[Rooms API] Individual cleanup error:", e)
+        }
+      }
 
-        if (staleUserIds.length > 0) {
-          await Promise.all(staleUserIds.map((staleId) => store.leaveRoom(rid, staleId).catch(() => null)))
-          existingRoom = await store.getRoom(rid).catch(() => null)
+      try {
+        let existingRoom = await store.getRoom(rid).catch(() => null)
+        let settings = await getRoomSettings(settingsStore, rid).catch(() => null)
+        const requestedCreateJoinMode = normalizeJoinMode(createJoinMode) ?? null
+        const requestedCreatePassword = typeof createPassword === "string" ? createPassword : null
+        const joinSessionPolicy = getJoinSessionPolicy()
+        const accountId = getAccountIdFromUserId(uid)
+
+        if (joinSessionPolicy === "single_account" && accountId && existingRoom?.users?.length) {
+          const staleUserIds = existingRoom.users
+            .map((u) => u.id)
+            .filter((id) => id !== uid && getAccountIdFromUserId(id) === accountId)
+
+          if (staleUserIds.length > 0) {
+            await Promise.all(staleUserIds.map((staleId) => store.leaveRoom(rid, staleId).catch(() => null)))
+            existingRoom = await store.getRoom(rid).catch(() => null)
+          }
+
+          if (settings && getAccountIdFromUserId(settings.adminUserId) === accountId && settings.adminUserId !== uid) {
+            const next: RoomSettings = { ...settings, adminUserId: uid }
+            await setRoomSettings(settingsStore, rid, next)
+            settings = next
+          }
         }
 
-        if (settings && getAccountIdFromUserId(settings.adminUserId) === accountId && settings.adminUserId !== uid) {
-          const next: RoomSettings = { ...settings, adminUserId: uid }
+        if (!settings) {
+          const canClaimAdmin = !existingRoom || existingRoom.users.length === 0
+          const adminUserId = canClaimAdmin ? uid : existingRoom?.users?.[0]?.id ?? uid
+          const joinMode: RoomJoinMode =
+            requestedCreateJoinMode ?? (requestedCreatePassword && requestedCreatePassword.trim() ? "password" : "public")
+          const next: RoomSettings = { adminUserId, joinMode }
+          if (joinMode === "password") {
+            const passwordValue = requestedCreatePassword?.trim() ?? ""
+            if (!passwordValue) {
+              return NextResponse.json({ success: false, error: "Password required" }, { status: 400 })
+            }
+            const { saltBase64, hashBase64 } = hashPasswordForStorage(passwordValue)
+            next.passwordSalt = saltBase64
+            next.passwordHash = hashBase64
+          }
           await setRoomSettings(settingsStore, rid, next)
           settings = next
+        } else {
+          if (settings.joinMode === "password") {
+            const passwordValue = typeof joinPassword === "string" ? joinPassword.trim() : ""
+            if (!passwordValue) {
+              return NextResponse.json({ success: false, error: "Password required" }, { status: 401 })
+            }
+            if (!settings.passwordSalt || !settings.passwordHash) {
+              return NextResponse.json({ success: false, error: "Password config invalid" }, { status: 500 })
+            }
+            const ok = verifyPassword(passwordValue, settings.passwordSalt, settings.passwordHash)
+            if (!ok) {
+              return NextResponse.json({ success: false, error: "Invalid password" }, { status: 401 })
+            }
+          }
         }
+
+        const avatar =
+          typeof avatarUrl === "string" && avatarUrl.trim().length > 0
+            ? avatarUrl.trim()
+            : `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(userId)}`
+
+        const roomData = await store.joinRoom(rid, {
+          id: uid,
+          name: userName.trim(),
+          sourceLanguage: sourceLanguage.trim(),
+          targetLanguage: targetLanguage.trim(),
+          avatar,
+        })
+
+        return NextResponse.json({
+          success: true,
+          room: roomData,
+          settings: settings ? { adminUserId: settings.adminUserId, joinMode: settings.joinMode } : null,
+        })
+      } catch (e) {
+        console.error("[Rooms API] Join error:", e)
+        return NextResponse.json({ 
+          success: false, 
+          error: e instanceof Error ? e.message : "Join failed" 
+        }, { status: 500 })
       }
-
-      if (!settings) {
-        const canClaimAdmin = !existingRoom || existingRoom.users.length === 0
-        const adminUserId = canClaimAdmin ? uid : existingRoom?.users?.[0]?.id ?? uid
-        const joinMode: RoomJoinMode =
-          requestedCreateJoinMode ?? (requestedCreatePassword && requestedCreatePassword.trim() ? "password" : "public")
-        const next: RoomSettings = { adminUserId, joinMode }
-        if (joinMode === "password") {
-          const passwordValue = requestedCreatePassword?.trim() ?? ""
-          if (!passwordValue) {
-            return NextResponse.json({ success: false, error: "Password required" }, { status: 400 })
-          }
-          const { saltBase64, hashBase64 } = hashPasswordForStorage(passwordValue)
-          next.passwordSalt = saltBase64
-          next.passwordHash = hashBase64
-        }
-        await setRoomSettings(settingsStore, rid, next)
-        settings = next
-      } else {
-        if (settings.joinMode === "password") {
-          const passwordValue = typeof joinPassword === "string" ? joinPassword.trim() : ""
-          if (!passwordValue) {
-            return NextResponse.json({ success: false, error: "Password required" }, { status: 401 })
-          }
-          if (!settings.passwordSalt || !settings.passwordHash) {
-            return NextResponse.json({ success: false, error: "Password config invalid" }, { status: 500 })
-          }
-          const ok = verifyPassword(passwordValue, settings.passwordSalt, settings.passwordHash)
-          if (!ok) {
-            return NextResponse.json({ success: false, error: "Invalid password" }, { status: 401 })
-          }
-        }
-      }
-
-      const avatar =
-        typeof avatarUrl === "string" && avatarUrl.trim().length > 0
-          ? avatarUrl.trim()
-          : `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(userId)}`
-
-      const roomData = await store.joinRoom(rid, {
-        id: uid,
-        name: userName.trim(),
-        sourceLanguage: sourceLanguage.trim(),
-        targetLanguage: targetLanguage.trim(),
-        avatar,
-      })
-
-      return NextResponse.json({
-        success: true,
-        room: roomData,
-        settings: settings ? { adminUserId: settings.adminUserId, joinMode: settings.joinMode } : null,
-      })
     }
 
     if (action === "leave") {

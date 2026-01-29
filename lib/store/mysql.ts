@@ -3,8 +3,25 @@ import { RoomStore, RoomData, User, Message } from "./types"
 import crypto from "node:crypto"
 
 export class MysqlRoomStore implements RoomStore {
+  private async ensureOpenidColumn(pool: any, tableName: string): Promise<void> {
+    try {
+      const rows = await pool.query(
+        `SELECT COUNT(*) as cnt FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '${tableName}' AND column_name = '_openid'`
+      )
+      const count = Array.isArray(rows) && rows.length > 0 ? Number(rows[0].cnt || 0) : 0
+      if (count === 0) {
+        await pool.query(`ALTER TABLE \`${tableName}\` ADD COLUMN \`_openid\` VARCHAR(64) DEFAULT '' NOT NULL`)
+      }
+    } catch (e) {
+      console.warn(`[MysqlRoomStore] Failed to ensure _openid on ${tableName}:`, e)
+    }
+  }
+
   async joinRoom(roomId: string, user: User): Promise<RoomData> {
     const pool = await getMariaPool()
+    await this.ensureOpenidColumn(pool, 'rooms')
+    await this.ensureOpenidColumn(pool, 'room_users')
+
     await pool.query(
       "INSERT INTO `rooms` (id, created_at, last_activity_at, _openid) VALUES (?, NOW(), NOW(), ?) ON DUPLICATE KEY UPDATE last_activity_at = NOW()",
       [roomId, ""]
@@ -26,6 +43,8 @@ export class MysqlRoomStore implements RoomStore {
 
   async sendMessage(roomId: string, message: Message): Promise<Message> {
     const pool = await getMariaPool()
+    await this.ensureOpenidColumn(pool, 'room_messages')
+
     const id = message.id?.trim() ? message.id : crypto.randomUUID()
     await pool.query(
       "INSERT INTO `room_messages` (id, room_id, data, created_at, _openid) VALUES (?, ?, ?, NOW(), ?)",

@@ -21,6 +21,7 @@ model User {
   uiLocale  String?  @map("uiLocale")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  openid    String   @default("") @map("_openid")
 }
 
 // 对应 supabase_schema.sql 中的 profiles 表
@@ -43,6 +44,7 @@ model Room {
   id             String        @id
   createdAt      DateTime      @default(now()) @map("created_at")
   lastActivityAt DateTime      @default(now()) @map("last_activity_at")
+  openid         String        @default("") @map("_openid")
   users          RoomUser[]
   messages       RoomMessage[]
 
@@ -54,6 +56,7 @@ model RoomUser {
   userId    String   @map("user_id")
   data      Json? // Stores the full user object (name, languages, avatar, etc.)
   createdAt DateTime @default(now()) @map("created_at")
+  openid    String   @default("") @map("_openid")
 
   room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
 
@@ -66,6 +69,7 @@ model RoomMessage {
   roomId    String   @map("room_id")
   data      Json? // Stores the full message object
   createdAt DateTime @default(now()) @map("created_at")
+  openid    String   @default("") @map("_openid")
 
   room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
 
@@ -78,6 +82,7 @@ model AppSetting {
   key       String   @id
   value     Json
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+  openid    String   @default("") @map("_openid")
 
   @@map("app_settings")
 }
