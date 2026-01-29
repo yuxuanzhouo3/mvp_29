@@ -62,7 +62,9 @@ export async function POST(request: NextRequest) {
 
     const sdk = getAlipaySdk() as any
     const userAgent = request.headers.get("user-agent") ?? ""
-    const isMobile = /mobile|android|iphone|ipad|ipod/i.test(userAgent)
+    const urlParams = new URL(request.url).searchParams
+    const isFullMode = urlParams.get("full_mode") === "1" || userAgent.includes("full_mode=1")
+    const isMobile = !isFullMode && /mobile|android|iphone|ipad|ipod/i.test(userAgent)
     const apiMethod = isMobile ? "alipay.trade.wap.pay" : "alipay.trade.page.pay"
     const productCode = isMobile ? "QUICK_WAP_PAY" : "FAST_INSTANT_TRADE_PAY"
     const url = await sdk.pageExecute(
