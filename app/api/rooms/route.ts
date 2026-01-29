@@ -75,6 +75,22 @@ async function getSettingValue(store: SettingsStore, key: string): Promise<unkno
   return getInMemorySettingsStore().get(key) ?? null
 }
 
+async function ensureAppSettingsOpenidColumn(client: MysqlClient): Promise<boolean> {
+  try {
+    const rows = await client.$queryRaw<{ cnt?: number | bigint }[]>(
+      Prisma.sql`SELECT COUNT(*) as cnt FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'app_settings' AND column_name = '_openid'`
+    )
+    const count = Number(rows?.[0]?.cnt ?? 0)
+    if (count === 0) {
+      await client.$executeRaw(Prisma.sql`ALTER TABLE app_settings ADD COLUMN \`_openid\` VARCHAR(64) DEFAULT '' NOT NULL`)
+    }
+    return true
+  } catch (e) {
+    console.error("[Rooms API] ensure app_settings _openid failed:", e)
+    return false
+  }
+}
+
 async function setSettingValue(store: SettingsStore, key: string, value: unknown): Promise<void> {
   if (store.kind === "supabase") {
     await store.client
@@ -91,10 +107,21 @@ async function setSettingValue(store: SettingsStore, key: string, value: unknown
   }
   if (store.kind === "mysql") {
     const nextValue = value as Prisma.InputJsonValue
+    const hasOpenid = await ensureAppSettingsOpenidColumn(store.client)
+    if (hasOpenid) {
+      await store.client.$executeRaw(
+        Prisma.sql`
+          INSERT INTO app_settings (\`key\`, \`value\`, updated_at, _openid)
+          VALUES (${key}, CAST(${JSON.stringify(nextValue)} AS JSON), NOW(), '')
+          ON DUPLICATE KEY UPDATE \`value\` = VALUES(\`value\`), updated_at = VALUES(updated_at)
+        `
+      )
+      return
+    }
     await store.client.$executeRaw(
       Prisma.sql`
-        INSERT INTO app_settings (\`key\`, \`value\`, updated_at, _openid)
-        VALUES (${key}, CAST(${JSON.stringify(nextValue)} AS JSON), NOW(), '')
+        INSERT INTO app_settings (\`key\`, \`value\`, updated_at)
+        VALUES (${key}, CAST(${JSON.stringify(nextValue)} AS JSON), NOW())
         ON DUPLICATE KEY UPDATE \`value\` = VALUES(\`value\`), updated_at = VALUES(updated_at)
       `
     )
@@ -518,9 +545,9 @@ export async function POST(request: NextRequest) {
         })
       } catch (e) {
         console.error("[Rooms API] Join error:", e)
-        return NextResponse.json({ 
-          success: false, 
-          error: e instanceof Error ? e.message : "Join failed" 
+        return NextResponse.json({
+          success: false,
+          error: e instanceof Error ? e.message : "Join failed"
         }, { status: 500 })
       }
     }
