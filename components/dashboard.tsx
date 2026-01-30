@@ -1,7 +1,7 @@
 "use client"
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Users, MonitorSpeaker, ArrowLeft } from "lucide-react"
+import { Users, MonitorSpeaker, LogIn, LogOut } from "lucide-react"
 import Link from "next/link"
 import { useI18n } from "@/components/i18n-provider"
 import { UiLanguageSelector } from "@/components/ui-language-selector"
@@ -12,20 +12,27 @@ import { useAuth } from "@/components/auth-provider"
 export function Dashboard() {
   const { t } = useI18n()
   const router = useRouter()
-  const { signOut } = useAuth()
+  const { user, signOut } = useAuth()
 
-  const handleBack = async () => {
+  const handleLogout = async () => {
     await signOut()
-    router.push("/login")
+    router.replace("/login")
   }
 
   return (
     <div className="container mx-auto p-4 md:p-8 min-h-screen flex flex-col max-w-4xl">
       <div className="flex justify-between items-center mb-8">
-        <Button variant="ghost" size="sm" className="gap-2" onClick={handleBack}>
-          <ArrowLeft className="w-4 h-4" />
-          {t("common.back")}
-        </Button>
+        {user ? (
+          <Button variant="ghost" size="sm" className="gap-2" onClick={handleLogout}>
+            <LogOut className="w-4 h-4" />
+            {t("common.logout")}
+          </Button>
+        ) : (
+          <Button variant="ghost" size="sm" className="gap-2" onClick={() => router.push("/login")}>
+            <LogIn className="w-4 h-4" />
+            {t("admin.login")}
+          </Button>
+        )}
         <UiLanguageSelector />
       </div>
 

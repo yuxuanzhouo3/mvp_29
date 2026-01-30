@@ -1,12 +1,8 @@
 import { Dashboard } from "@/components/dashboard"
-import { AuthRequired } from "@/components/auth-required"
-
 export default function Home() {
   return (
     <main className="min-h-screen bg-background">
-      <AuthRequired>
-        <Dashboard />
-      </AuthRequired>
+      <Dashboard />
     </main>
   )
 }
