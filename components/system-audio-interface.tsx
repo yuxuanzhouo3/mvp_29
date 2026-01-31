@@ -374,6 +374,8 @@ export function SystemAudioInterface() {
   }, [isRecording, sourceLanguage, targetLanguage])
 
   const stopRecording = () => {
+    const finalSampleRate = audioContextRef.current?.sampleRate || 48000
+
     if (scriptProcessorRef.current) {
       scriptProcessorRef.current.disconnect()
       scriptProcessorRef.current = null
@@ -417,7 +419,7 @@ export function SystemAudioInterface() {
         offset += arr.length
       }
 
-      const sampleRate = audioContextRef.current?.sampleRate || 48000
+      const sampleRate = finalSampleRate
 
       // Resample to 16k if needed (async in stopRecording context is OK but we need to handle it properly)
       // Since stopRecording is synchronous, we can't await easily here without making it async.
@@ -451,9 +453,9 @@ export function SystemAudioInterface() {
       // 1. 优先尝试系统音频录制 (getDisplayMedia)
       // 2. 如果不支持 (如移动端/WebView)，降级为麦克风录制 (getUserMedia)
       let mediaStream: MediaStream | null = null
-      let isMicrophoneFallback = false
 
       // 尝试 getDisplayMedia (系统内录)
+      // 注意：移动端浏览器通常不支持此 API，或者仅支持视频不支持音频
       if (navigator.mediaDevices?.getDisplayMedia) {
         try {
           mediaStream = await navigator.mediaDevices.getDisplayMedia({
@@ -461,57 +463,24 @@ export function SystemAudioInterface() {
             audio: true,
           })
         } catch (err: any) {
-           // 用户取消或拒绝，不再尝试麦克风
-           if (err.name === 'NotAllowedError') {
-             throw err
-           }
-           // 其他错误，尝试麦克风
-           console.log("getDisplayMedia failed, trying getUserMedia...", err)
-        }
-      }
-
-      // 如果 getDisplayMedia 失败或不支持，尝试 getUserMedia (麦克风)
-      if (!mediaStream) {
-        try {
-          // 兼容性 getUserMedia 获取
-          const getMedia = async (constraints: MediaStreamConstraints) => {
-             if (navigator.mediaDevices?.getUserMedia) {
-               return navigator.mediaDevices.getUserMedia(constraints)
-             }
-             // Legacy APIs
-             const legacyGetUserMedia = (navigator as any).getUserMedia || 
-                                        (navigator as any).webkitGetUserMedia || 
-                                        (navigator as any).mozGetUserMedia || 
-                                        (navigator as any).msGetUserMedia
-             
-             if (legacyGetUserMedia) {
-               return new Promise<MediaStream>((resolve, reject) => {
-                 legacyGetUserMedia.call(navigator, constraints, resolve, reject)
-               })
-             }
-             throw new Error("getUserMedia not supported")
+          console.error("getDisplayMedia failed:", err)
+          if (err.name === 'NotAllowedError') {
+            // 用户取消
+            return
           }
-
-          mediaStream = await getMedia({
-            audio: true,
-            video: false
-          })
-          
-          isMicrophoneFallback = true
-          toast({
-            title: "已切换至麦克风模式",
-            description: "当前环境不支持系统内录，将通过麦克风采集声音。",
-            duration: 5000,
-          })
-        } catch (err) {
-          console.error("getUserMedia also failed:", err)
         }
       }
 
+      // 用户明确要求“不从麦克风收声”，因此移除自动降级 getUserMedia 的逻辑
+      // 如果 getDisplayMedia 失败或不支持，直接提示用户
+
       if (!mediaStream) {
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
         toast({
-          title: "无法开始录音",
-          description: "当前环境不支持音频录制，请检查麦克风权限或使用系统浏览器打开。",
+          title: "无法启动系统录音",
+          description: isMobile
+            ? "移动端浏览器通常不支持系统内录(System Audio)，请尝试使用PC端访问。"
+            : "当前环境不支持系统内录或您取消了授权。",
           variant: "destructive",
         })
         return
@@ -521,9 +490,7 @@ export function SystemAudioInterface() {
       if (!audioTrack) {
         toast({
           title: "未检测到音频",
-          description: isMicrophoneFallback 
-            ? "无法访问麦克风，请检查权限设置。" 
-            : "请在分享屏幕时勾选'分享系统音频'或'分享标签页音频'。",
+          description: "请在分享屏幕时务必勾选 '分享系统音频' (Share System Audio)。",
           variant: "destructive",
         })
         mediaStream.getTracks().forEach((track) => track.stop())
@@ -969,32 +936,32 @@ export function SystemAudioInterface() {
         </Collapsible>
 
         {/* Floating control bar when settings collapsed */}
-          {!isSettingsOpen && (
-            <div className="flex items-center justify-between bg-card p-3 rounded-lg border shadow-sm animate-in fade-in slide-in-from-top-2">
-              <div className="flex items-center gap-4 text-sm">
-                <span className="font-medium">{sourceLanguage.flag} {sourceLanguage.name}</span>
-                <span className="text-muted-foreground">→</span>
-                <span className="font-medium">{targetLanguage.flag} {targetLanguage.name}</span>
-              </div>
-              <Button
-                size="sm"
-                variant={isRecording ? "destructive" : "default"}
-                onClick={isRecording ? stopRecording : startRecording}
-              >
-                {isRecording ? (
-                  <>
-                    <Square className="w-3 h-3 mr-2 fill-current" />
-                    停止监听
-                  </>
-                ) : (
-                  <>
-                    <MonitorPlay className="w-3 h-3 mr-2" />
-                    开始监听
-                  </>
-                )}
-              </Button>
+        {!isSettingsOpen && (
+          <div className="flex items-center justify-between bg-card p-3 rounded-lg border shadow-sm animate-in fade-in slide-in-from-top-2">
+            <div className="flex items-center gap-4 text-sm">
+              <span className="font-medium">{sourceLanguage.flag} {sourceLanguage.name}</span>
+              <span className="text-muted-foreground">→</span>
+              <span className="font-medium">{targetLanguage.flag} {targetLanguage.name}</span>
             </div>
-          )}
+            <Button
+              size="sm"
+              variant={isRecording ? "destructive" : "default"}
+              onClick={isRecording ? stopRecording : startRecording}
+            >
+              {isRecording ? (
+                <>
+                  <Square className="w-3 h-3 mr-2 fill-current" />
+                  停止监听
+                </>
+              ) : (
+                <>
+                  <MonitorPlay className="w-3 h-3 mr-2" />
+                  开始监听
+                </>
+              )}
+            </Button>
+          </div>
+        )}
 
         {/* Start button outside when settings are open (for better UX flow) */}
         {isSettingsOpen && (
@@ -1032,20 +999,20 @@ export function SystemAudioInterface() {
           >
             <div className="flex flex-col gap-2 p-4">
               {transcripts.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center text-center text-muted-foreground py-12 px-4 space-y-4">
-                    <div className="bg-muted/50 p-3 rounded-full">
-                      <MonitorPlay className="w-8 h-8 opacity-50" />
-                    </div>
-                    <div className="space-y-2 max-w-sm">
-                      <p className="text-sm font-medium text-foreground">
-                        等待开始监听
-                      </p>
-                      <p className="text-xs leading-relaxed">
-                        点击"开始监听"后，请选择包含音频的<span className="font-medium text-primary">浏览器标签页</span>或<span className="font-medium text-primary">整个屏幕</span>，并务必勾选<span className="font-medium text-primary">"分享音频"</span>。
-                      </p>
-                    </div>
+                <div className="flex flex-col items-center justify-center text-center text-muted-foreground py-12 px-4 space-y-4">
+                  <div className="bg-muted/50 p-3 rounded-full">
+                    <MonitorPlay className="w-8 h-8 opacity-50" />
                   </div>
-                ) : (
+                  <div className="space-y-2 max-w-sm">
+                    <p className="text-sm font-medium text-foreground">
+                      等待开始监听
+                    </p>
+                    <p className="text-xs leading-relaxed">
+                      点击"开始监听"后，请选择包含音频的<span className="font-medium text-primary">浏览器标签页</span>或<span className="font-medium text-primary">整个屏幕</span>，并务必勾选<span className="font-medium text-primary">"分享音频"</span>。
+                    </p>
+                  </div>
+                </div>
+              ) : (
                 transcripts.map((t, index) => (
                   <div key={index} className="flex flex-col gap-1 p-2 rounded-lg hover:bg-muted/50 transition-colors">
                     {/* Source Text */}
