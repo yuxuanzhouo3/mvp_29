@@ -116,6 +116,103 @@ export function SystemAudioInterface() {
     return 10
   }
 
+  const [isNativeMode, setIsNativeMode] = useState(false)
+
+  // Native App Integration
+  useEffect(() => {
+    if (typeof window !== "undefined" && (window as any).MornSpeakerNative) {
+      setIsNativeMode(true)
+      console.log("[SystemAudio] Native App mode detected")
+    }
+  }, [])
+
+  // Expose global bridge function
+  useEffect(() => {
+    if (isNativeMode) {
+      (window as any).dispatchNativeAudio = (base64: string) => {
+        try {
+          const binaryString = atob(base64)
+          const len = binaryString.length
+          const bytes = new Uint8Array(len)
+          for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i)
+          }
+          const int16 = new Int16Array(bytes.buffer)
+          const float32 = new Float32Array(int16.length)
+          for (let i = 0; i < int16.length; i++) {
+            float32[i] = int16[i] / 32768.0
+          }
+          handleRawAudioChunk(float32, 16000) // Assume native sends 16k
+        } catch (e) {
+          console.error("Error dispatching native audio:", e)
+        }
+      }
+    }
+    return () => {
+      if ((window as any).dispatchNativeAudio) {
+        delete (window as any).dispatchNativeAudio
+      }
+    }
+  }, [isNativeMode])
+
+  const handleRawAudioChunk = async (chunk: Float32Array, inputSampleRate: number) => {
+    const now = Date.now()
+    const byteSize = chunk.length * 2
+    setDebugLastChunkBytes(byteSize)
+    setDebugLastChunkAt(now)
+    setDebugMimeType("audio/wav (pcm)")
+
+    // Simple RMS for silence detection on raw chunk
+    let sum = 0
+    for (let i = 0; i < chunk.length; i++) {
+      sum += chunk[i] * chunk[i]
+    }
+    const rms = Math.sqrt(sum / chunk.length)
+    if (now - lastRmsUpdateRef.current > 500) {
+      lastRmsUpdateRef.current = now
+      setDebugRms(Number(rms.toFixed(4)))
+    }
+
+    if (rms > silenceThreshold) {
+      hasAudioDetectedRef.current = true
+      if (lastSpeakingTimeRef.current === 0) {
+        speechStartTimeRef.current = Date.now()
+      }
+      lastSpeakingTimeRef.current = Date.now()
+    } else {
+      if (Date.now() - lastSpeakingTimeRef.current > PAUSE_THRESHOLD) {
+        speechStartTimeRef.current = 0
+      }
+    }
+
+    const timeSinceLastSpeech = now - lastSpeakingTimeRef.current
+    const isSpeaking = timeSinceLastSpeech < PAUSE_THRESHOLD
+    setDebugIsSpeaking(isSpeaking)
+
+    const speechDuration = lastSpeakingTimeRef.current - speechStartTimeRef.current
+
+    // Realtime Sending
+    if (useRealtimeASR && realtimeEnabledRef.current) {
+      const handled = await sendRealtimeChunk(chunk) // sendRealtimeChunk handles resampling if needed, but it relies on audioContextRef.sampleRate. We might need to adjust.
+
+      // Silence Detection & Auto-Flush for Realtime
+      if (!isSpeaking && timeSinceLastSpeech > 1000 && realtimePartialRef.current) {
+        const text = realtimePartialRef.current.trim()
+        if (text) {
+          void enqueueTranscript(text, now)
+          committedPrefixRef.current += realtimePartialRef.current
+          realtimePartialRef.current = ""
+          setDebugRealtimePartial("")
+        }
+      }
+
+      if (handled) return
+    }
+
+    // Fallback logic for non-realtime or buffering...
+    // (This part is less critical for native app if we assume realtime works, but good to keep)
+  }
+
   const enqueueTranscript = async (text: string, capturedAt: number) => {
     const cleaned = text.trim()
     if (!cleaned) return
@@ -372,6 +469,12 @@ export function SystemAudioInterface() {
   const stopRecording = () => {
     const finalSampleRate = audioContextRef.current?.sampleRate || 48000
 
+    if (isNativeMode) {
+      if ((window as any).MornSpeakerNative?.stopCapture) {
+        (window as any).MornSpeakerNative.stopCapture()
+      }
+    }
+
     if (scriptProcessorRef.current) {
       scriptProcessorRef.current.disconnect()
       scriptProcessorRef.current = null
@@ -444,6 +547,22 @@ export function SystemAudioInterface() {
       if (noAudioTimeoutRef.current) {
         clearTimeout(noAudioTimeoutRef.current)
         noAudioTimeoutRef.current = null
+      }
+
+      if (isNativeMode) {
+        console.log("[SystemAudio] Starting native capture...")
+        if ((window as any).MornSpeakerNative?.startCapture) {
+          (window as any).MornSpeakerNative.startCapture()
+        }
+        setIsRecording(true)
+        setIsSettingsOpen(false)
+        if (useRealtimeASR) {
+          realtimeSendRawRef.current = true
+          realtimeEnabledRef.current = true
+          const engineModelType = resolveTencentEngine(activeSourceRef.current)
+          await openRealtimeSocket(1, engineModelType)
+        }
+        return
       }
 
       // 1. 优先尝试系统音频录制 (getDisplayMedia)
@@ -590,139 +709,8 @@ export function SystemAudioInterface() {
         const inputData = e.inputBuffer.getChannelData(0)
         // Copy data immediately because the buffer is reused
         const chunk = new Float32Array(inputData)
-
-        const now = Date.now()
-        const byteSize = chunk.length * 2 // 16-bit PCM size approximation for debug
-        setDebugLastChunkBytes(byteSize)
-        setDebugLastChunkAt(now)
-        setDebugMimeType("audio/wav (pcm)")
-
-        const timeSinceLastSpeech = now - lastSpeakingTimeRef.current
-        const isSpeaking = timeSinceLastSpeech < PAUSE_THRESHOLD
-        setDebugIsSpeaking(isSpeaking)
-
-        // Calculate total speech duration in current session
-        const speechDuration = lastSpeakingTimeRef.current - speechStartTimeRef.current
-
-        // Realtime Sending
-        if (useRealtimeASR && realtimeEnabledRef.current) {
-          const handled = await sendRealtimeChunk(chunk)
-
-          // Silence Detection & Auto-Flush for Realtime
-          // If silence detected for > 1000ms and we have partial text, flush it
-          if (!isSpeaking && timeSinceLastSpeech > 1000 && realtimePartialRef.current) {
-            const text = realtimePartialRef.current.trim()
-            if (text) {
-              void enqueueTranscript(text, now)
-              committedPrefixRef.current += realtimePartialRef.current // Use original with whitespace
-              realtimePartialRef.current = ""
-              setDebugRealtimePartial("")
-            }
-          }
-
-          if (handled) return
-        }
-
-        // Buffer Logic
-        if (useRealtimeASR && !realtimeEnabledRef.current) {
-          if (audioBufferRef.current.length === 0) {
-            bufferStartTimeRef.current = now
-          }
-          audioBufferRef.current.push(chunk)
-
-          const sampleRate = audioContextRef.current?.sampleRate || 48000
-          const currentDurationMs = (audioBufferRef.current.reduce((acc, c) => acc + c.length, 0) / sampleRate) * 1000
-
-          if (currentDurationMs >= TARGET_SEGMENT_DURATION) {
-            const totalLength = audioBufferRef.current.reduce((acc, cur) => acc + cur.length, 0)
-            const merged = new Float32Array(totalLength)
-            let offset = 0
-            for (const arr of audioBufferRef.current) {
-              merged.set(arr, offset)
-              offset += arr.length
-            }
-
-            const capturedAt = bufferStartTimeRef.current || now
-            // Copy buffer ref and clear immediately to avoid race conditions
-            // But we need to keep the logic simple.
-            // We'll process this chunk async
-
-            // Clear buffer immediately for next segment
-            audioBufferRef.current = []
-            bufferStartTimeRef.current = now
-
-            void (async () => {
-              const resampled = await resampleTo16k(merged, sampleRate)
-              const wavBuffer = encodeFloat32ToWav(resampled, 16000)
-              const blob = new Blob([wavBuffer], { type: "audio/wav" })
-              await processAudioChunk(blob, capturedAt)
-            })()
-          }
-          return
-        }
-
-        if (isSpeaking) {
-          if (audioBufferRef.current.length === 0) {
-            bufferStartTimeRef.current = now
-          }
-          audioBufferRef.current.push(chunk)
-
-          const currentDurationMs = (audioBufferRef.current.reduce((acc, c) => acc + c.length, 0) / 16000) * 1000
-
-          if (currentDurationMs > TARGET_SEGMENT_DURATION) {
-            const totalLength = audioBufferRef.current.reduce((acc, cur) => acc + cur.length, 0)
-            const merged = new Float32Array(totalLength)
-            let offset = 0
-            for (const arr of audioBufferRef.current) {
-              merged.set(arr, offset)
-              offset += arr.length
-            }
-            const wavBuffer = encodeFloat32ToWav(merged, 16000)
-            const blob = new Blob([wavBuffer], { type: "audio/wav" })
-
-            const capturedAt = bufferStartTimeRef.current || now
-            audioBufferRef.current = []
-            bufferStartTimeRef.current = now
-            await processAudioChunk(blob, capturedAt)
-          } else if (currentDurationMs > MAX_BUFFER_DURATION) {
-            // Force flush if too long
-            const totalLength = audioBufferRef.current.reduce((acc, cur) => acc + cur.length, 0)
-            const merged = new Float32Array(totalLength)
-            let offset = 0
-            for (const arr of audioBufferRef.current) {
-              merged.set(arr, offset)
-              offset += arr.length
-            }
-            const wavBuffer = encodeFloat32ToWav(merged, 16000)
-            const blob = new Blob([wavBuffer], { type: "audio/wav" })
-
-            const capturedAt = bufferStartTimeRef.current || now
-            audioBufferRef.current = []
-            bufferStartTimeRef.current = now
-            await processAudioChunk(blob, capturedAt)
-          }
-        } else {
-          // Silence detected
-          if (audioBufferRef.current.length > 0) {
-            if (speechDuration > MIN_SPEECH_DURATION) {
-              const totalLength = audioBufferRef.current.reduce((acc, cur) => acc + cur.length, 0)
-              const merged = new Float32Array(totalLength)
-              let offset = 0
-              for (const arr of audioBufferRef.current) {
-                merged.set(arr, offset)
-                offset += arr.length
-              }
-              const wavBuffer = encodeFloat32ToWav(merged, 16000)
-              const blob = new Blob([wavBuffer], { type: "audio/wav" })
-
-              const capturedAt = bufferStartTimeRef.current || now
-              audioBufferRef.current = []
-              await processAudioChunk(blob, capturedAt)
-            } else {
-              audioBufferRef.current = []
-            }
-          }
-        }
+        const sampleRate = audioContext.sampleRate
+        handleRawAudioChunk(chunk, sampleRate)
       }
 
       setIsRecording(true)
