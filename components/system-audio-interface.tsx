@@ -25,11 +25,7 @@ const HALLUCINATION_PHRASES = [
 ]
 
 export function SystemAudioInterface() {
-  const isTencentDeploy =
-    typeof process !== "undefined" &&
-    String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
-      .trim()
-      .toLowerCase() === "tencent"
+  const useRealtimeASR = true // Force enable Realtime ASR (Tencent) for all versions including International
   const minAudioBytes = 1024
   const silenceThreshold = 0.01
   const PAUSE_THRESHOLD = 600
@@ -583,7 +579,7 @@ export function SystemAudioInterface() {
       source.connect(processor)
 
       // Setup Realtime if needed
-      if (isTencentDeploy) {
+      if (useRealtimeASR) {
         realtimeSendRawRef.current = true // Always raw PCM
         realtimeEnabledRef.current = true
         const engineModelType = resolveTencentEngine(activeSourceRef.current)
@@ -609,7 +605,7 @@ export function SystemAudioInterface() {
         const speechDuration = lastSpeakingTimeRef.current - speechStartTimeRef.current
 
         // Realtime Sending
-        if (isTencentDeploy && realtimeEnabledRef.current) {
+        if (useRealtimeASR && realtimeEnabledRef.current) {
           const handled = await sendRealtimeChunk(chunk)
 
           // Silence Detection & Auto-Flush for Realtime
@@ -628,7 +624,7 @@ export function SystemAudioInterface() {
         }
 
         // Buffer Logic
-        if (isTencentDeploy && !realtimeEnabledRef.current) {
+        if (useRealtimeASR && !realtimeEnabledRef.current) {
           if (audioBufferRef.current.length === 0) {
             bufferStartTimeRef.current = now
           }
