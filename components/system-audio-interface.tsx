@@ -4,12 +4,11 @@ import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { ArrowLeft, MonitorPlay, Square, Loader2, AlertCircle, ChevronDown, ChevronUp, Settings2 } from "lucide-react"
+import { ArrowLeft, MonitorPlay, Square, Loader2, AlertCircle, ChevronDown, ChevronUp, Settings2, Activity } from "lucide-react"
 import Link from "next/link"
 import { transcribeAudio, translateText, encodeFloat32ToWav, encodeFloat32ToPcm16le, resampleTo16k } from "@/lib/audio-utils"
 import { SUPPORTED_LANGUAGES, type Language } from "@/components/voice-chat-interface"
 import { useToast } from "@/hooks/use-toast"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 
@@ -40,6 +39,7 @@ export function SystemAudioInterface() {
 
   const [isRecording, setIsRecording] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(true)
+  const [isDebugOpen, setIsDebugOpen] = useState(false)
   const [debugAsrText, setDebugAsrText] = useState("")
   const [debugRealtimePartial, setDebugRealtimePartial] = useState("")
   const [debugQueueCount, setDebugQueueCount] = useState(0)
@@ -238,16 +238,16 @@ export function SystemAudioInterface() {
             // Calculate effective text by removing already committed prefix
             let effectiveText = ""
             if (text.startsWith(committedPrefixRef.current)) {
-               effectiveText = text.slice(committedPrefixRef.current.length)
+              effectiveText = text.slice(committedPrefixRef.current.length)
             } else if (committedPrefixRef.current.startsWith(text)) {
-               // ASR retracted text we already committed; ignore this update
-               effectiveText = ""
+              // ASR retracted text we already committed; ignore this update
+              effectiveText = ""
             } else {
-               // Divergence detected (ASR changed history significantly)
-               // Reset prefix to start fresh from this point to avoid data loss, 
-               // though this may cause some duplication in transcript
-               committedPrefixRef.current = ""
-               effectiveText = text
+              // Divergence detected (ASR changed history significantly)
+              // Reset prefix to start fresh from this point to avoid data loss, 
+              // though this may cause some duplication in transcript
+              committedPrefixRef.current = ""
+              effectiveText = text
             }
 
             if (isFinal) {
@@ -262,21 +262,21 @@ export function SystemAudioInterface() {
               // Look for sentence terminators followed by space or end of string
               const match = effectiveText.match(/([.!?。！？]+)(\s|$)/)
               if (match && match.index !== undefined && match.index + match[1].length < effectiveText.length) {
-                 // Found a split point
-                 const splitIndex = match.index + match[1].length
-                 const toCommit = effectiveText.substring(0, splitIndex)
-                 const remainder = effectiveText.substring(splitIndex)
-                 
-                 if (toCommit.trim()) {
-                   void enqueueTranscript(toCommit, now)
-                   committedPrefixRef.current += toCommit
-                 }
-                 
-                 realtimePartialRef.current = remainder
-                 setDebugRealtimePartial(remainder)
+                // Found a split point
+                const splitIndex = match.index + match[1].length
+                const toCommit = effectiveText.substring(0, splitIndex)
+                const remainder = effectiveText.substring(splitIndex)
+
+                if (toCommit.trim()) {
+                  void enqueueTranscript(toCommit, now)
+                  committedPrefixRef.current += toCommit
+                }
+
+                realtimePartialRef.current = remainder
+                setDebugRealtimePartial(remainder)
               } else {
-                 realtimePartialRef.current = effectiveText
-                 setDebugRealtimePartial(effectiveText)
+                realtimePartialRef.current = effectiveText
+                setDebugRealtimePartial(effectiveText)
               }
             }
           }
@@ -310,15 +310,15 @@ export function SystemAudioInterface() {
       // It's Float32Array
       // Check byte length approx (length * 2 for 16-bit PCM)
       if (audioData.length * 2 < minAudioBytes) return false
-      
+
       // Resample to 16k if needed
       const currentRate = audioContextRef.current?.sampleRate || 48000
       let processedData = audioData
-      
+
       if (currentRate !== 16000) {
-         processedData = await resampleTo16k(audioData, currentRate)
+        processedData = await resampleTo16k(audioData, currentRate)
       }
-      
+
       buffer = encodeFloat32ToPcm16le(processedData)
     }
 
@@ -327,7 +327,7 @@ export function SystemAudioInterface() {
       realtimeEnabledRef.current = false
       return false
     }
-    
+
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(buffer)
       return true
@@ -341,9 +341,7 @@ export function SystemAudioInterface() {
   }
 
   const getScrollViewport = () => {
-    const root = scrollRef.current
-    if (!root) return null
-    return root.querySelector('[data-slot="scroll-area-viewport"]') as HTMLDivElement | null
+    return scrollRef.current
   }
 
   useEffect(() => {
@@ -418,21 +416,21 @@ export function SystemAudioInterface() {
         merged.set(arr, offset)
         offset += arr.length
       }
-      
+
       const sampleRate = audioContextRef.current?.sampleRate || 48000
-      
+
       // Resample to 16k if needed (async in stopRecording context is OK but we need to handle it properly)
       // Since stopRecording is synchronous, we can't await easily here without making it async.
       // However, we can fire-and-forget the processing or make the button handler async.
       // For now, let's wrap in an async IIFE
       void (async () => {
-         const resampled = await resampleTo16k(merged, sampleRate)
-         const wavBuffer = encodeFloat32ToWav(resampled, 16000)
-         const blob = new Blob([wavBuffer], { type: "audio/wav" })
-         const capturedAt = bufferStartTimeRef.current || Date.now()
-         await processAudioChunk(blob, capturedAt)
+        const resampled = await resampleTo16k(merged, sampleRate)
+        const wavBuffer = encodeFloat32ToWav(resampled, 16000)
+        const blob = new Blob([wavBuffer], { type: "audio/wav" })
+        const capturedAt = bufferStartTimeRef.current || Date.now()
+        await processAudioChunk(blob, capturedAt)
       })()
-      
+
       audioBufferRef.current = []
     }
     setIsRecording(false)
@@ -485,7 +483,7 @@ export function SystemAudioInterface() {
 
       audioContextRef.current = audioContext
       analyserRef.current = analyser
-      
+
       const sampleRate = audioContext.sampleRate
       console.log(`[SystemAudio] AudioContext initialized at ${sampleRate}Hz`)
 
@@ -592,13 +590,13 @@ export function SystemAudioInterface() {
           // Silence Detection & Auto-Flush for Realtime
           // If silence detected for > 1000ms and we have partial text, flush it
           if (!isSpeaking && timeSinceLastSpeech > 1000 && realtimePartialRef.current) {
-             const text = realtimePartialRef.current.trim()
-             if (text) {
-               void enqueueTranscript(text, now)
-               committedPrefixRef.current += realtimePartialRef.current // Use original with whitespace
-               realtimePartialRef.current = ""
-               setDebugRealtimePartial("")
-             }
+            const text = realtimePartialRef.current.trim()
+            if (text) {
+              void enqueueTranscript(text, now)
+              committedPrefixRef.current += realtimePartialRef.current // Use original with whitespace
+              realtimePartialRef.current = ""
+              setDebugRealtimePartial("")
+            }
           }
 
           if (handled) return
@@ -622,16 +620,16 @@ export function SystemAudioInterface() {
               merged.set(arr, offset)
               offset += arr.length
             }
-            
+
             const capturedAt = bufferStartTimeRef.current || now
             // Copy buffer ref and clear immediately to avoid race conditions
             // But we need to keep the logic simple.
             // We'll process this chunk async
-            
+
             // Clear buffer immediately for next segment
             audioBufferRef.current = []
             bufferStartTimeRef.current = now
-            
+
             void (async () => {
               const resampled = await resampleTo16k(merged, sampleRate)
               const wavBuffer = encodeFloat32ToWav(resampled, 16000)
@@ -789,7 +787,7 @@ export function SystemAudioInterface() {
       // 强制转 WAV 逻辑在 audio-utils 内部处理，这里我们监控结果
       const text = await transcribeAudio(audioBlob, sourceCode)
       const duration = Date.now() - startTime
-      
+
       // 更新调试信息：API 响应
       const timestamp = new Date().toLocaleTimeString()
       setDebugApiStatus(`200 OK (${timestamp}, ${duration}ms)`)
@@ -811,8 +809,8 @@ export function SystemAudioInterface() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-background">
-      <header className="flex items-center p-4 border-b bg-card">
+    <div className="flex flex-col min-h-screen bg-background">
+      <header className="sticky top-0 z-50 flex items-center p-4 border-b bg-card shrink-0 shadow-sm">
         <Link href="/">
           <Button variant="ghost" size="icon" className="mr-4">
             <ArrowLeft className="w-5 h-5" />
@@ -821,7 +819,7 @@ export function SystemAudioInterface() {
         <h1 className="text-xl font-semibold flex-1">系统同声传译</h1>
       </header>
 
-      <main className="flex-1 flex flex-col p-4 max-w-4xl mx-auto w-full gap-3 overflow-hidden">
+      <main className="flex-1 flex flex-col p-4 max-w-4xl mx-auto w-full gap-3">
         <Collapsible
           open={isSettingsOpen}
           onOpenChange={setIsSettingsOpen}
@@ -913,23 +911,32 @@ export function SystemAudioInterface() {
         </Collapsible>
 
         {/* Floating control bar when settings collapsed */}
-        {!isSettingsOpen && (
-          <div className="flex items-center justify-between bg-card p-3 rounded-lg border shadow-sm animate-in fade-in slide-in-from-top-2">
-            <div className="flex items-center gap-4 text-sm">
-              <span className="font-medium">{sourceLanguage.flag} {sourceLanguage.name}</span>
-              <span className="text-muted-foreground">→</span>
-              <span className="font-medium">{targetLanguage.flag} {targetLanguage.name}</span>
+          {!isSettingsOpen && (
+            <div className="flex items-center justify-between bg-card p-3 rounded-lg border shadow-sm animate-in fade-in slide-in-from-top-2">
+              <div className="flex items-center gap-4 text-sm">
+                <span className="font-medium">{sourceLanguage.flag} {sourceLanguage.name}</span>
+                <span className="text-muted-foreground">→</span>
+                <span className="font-medium">{targetLanguage.flag} {targetLanguage.name}</span>
+              </div>
+              <Button
+                size="sm"
+                variant={isRecording ? "destructive" : "default"}
+                onClick={isRecording ? stopRecording : startRecording}
+              >
+                {isRecording ? (
+                  <>
+                    <Square className="w-3 h-3 mr-2 fill-current" />
+                    停止监听
+                  </>
+                ) : (
+                  <>
+                    <MonitorPlay className="w-3 h-3 mr-2" />
+                    开始监听
+                  </>
+                )}
+              </Button>
             </div>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={stopRecording}
-            >
-              <Square className="w-3 h-3 mr-2 fill-current" />
-              停止监听
-            </Button>
-          </div>
-        )}
+          )}
 
         {/* Start button outside when settings are open (for better UX flow) */}
         {isSettingsOpen && (
@@ -953,78 +960,141 @@ export function SystemAudioInterface() {
           </Button>
         )}
 
-        <Card className="flex-[2] flex flex-col min-h-0 overflow-hidden mt-2">
-          <CardHeader className="pb-2 border-b">
-            <CardTitle className="flex items-center justify-between">
-              <span>实时字幕</span>
-              {isRecording && (
-                <span className="flex items-center text-sm font-normal text-red-500 animate-pulse">
-                  <span className="w-2 h-2 rounded-full bg-red-500 mr-2" />
-                  正在监听系统音频...
-                </span>
-              )}
+        {/* Realtime Subtitles */}
+        <Card className="flex flex-col mt-2 shadow-sm border">
+          <CardHeader className="py-3 px-4 border-b bg-muted/30">
+            <CardTitle className="text-base font-medium flex items-center gap-2">
+              <Activity className="w-4 h-4" />
+              实时字幕
             </CardTitle>
-            <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-              <div className="flex items-center justify-between">
-                <span>识别中：{debugRealtimePartial || "—"}</span>
-                <span>入队：{debugQueueCount}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>最新识别：{debugAsrText || "—"}</span>
-                <span>
-                  最近入队：{debugLastEnqueueAt ? new Date(debugLastEnqueueAt).toLocaleTimeString() : "—"}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>音量RMS：{debugRms || "—"}</span>
-                <span>说话中：{debugIsSpeaking ? "是" : "否"}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>
-                  分片大小：{debugLastChunkBytes ? `${Math.round(debugLastChunkBytes / 1024)}KB` : "—"}
-                </span>
-                <span>分片时间：{debugLastChunkAt ? new Date(debugLastChunkAt).toLocaleTimeString() : "—"}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>Mime：{debugMimeType || "—"}</span>
-                <span />
-              </div>
-              {/* 新增详细调试区 */}
-              <div className="mt-2 pt-2 border-t border-dashed border-gray-200">
-                <div className="flex items-center justify-between text-orange-600">
-                  <span>API状态: {debugApiStatus}</span>
-                  <span>WAV原始: {debugWavSize}</span>
+          </CardHeader>
+          <div
+            className="h-[50vh] min-h-[300px] overflow-y-auto p-0"
+            ref={scrollRef}
+          >
+            <div className="flex flex-col gap-2 p-4">
+              {transcripts.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center text-center text-muted-foreground py-12 px-4 space-y-4">
+                    <div className="bg-muted/50 p-3 rounded-full">
+                      <MonitorPlay className="w-8 h-8 opacity-50" />
+                    </div>
+                    <div className="space-y-2 max-w-sm">
+                      <p className="text-sm font-medium text-foreground">
+                        等待开始监听
+                      </p>
+                      <p className="text-xs leading-relaxed">
+                        点击"开始监听"后，请选择包含音频的<span className="font-medium text-primary">浏览器标签页</span>或<span className="font-medium text-primary">整个屏幕</span>，并务必勾选<span className="font-medium text-primary">"分享音频"</span>。
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                transcripts.map((t, index) => (
+                  <div key={index} className="flex flex-col gap-1 p-2 rounded-lg hover:bg-muted/50 transition-colors">
+                    {/* Source Text */}
+                    {t.original && (
+                      <div className="text-sm text-muted-foreground">
+                        {t.original}
+                      </div>
+                    )}
+                    {/* Translated Text */}
+                    <div className="text-base font-medium text-foreground">
+                      {t.translation}
+                    </div>
+                  </div>
+                ))
+              )}
+              {/* Partial Result (Ghost Text) */}
+              {debugRealtimePartial && (
+                <div className="flex flex-col gap-1 p-2 rounded-lg bg-muted/20 opacity-70 animate-pulse">
+                  {/* Source Partial */}
+                  {/* <div className="text-sm text-muted-foreground">...</div> */}
+                  {/* Translated Partial */}
+                  <div className="text-base font-medium text-foreground italic">
+                    {debugRealtimePartial}
+                  </div>
                 </div>
-                <div className="flex items-center justify-between text-orange-600">
-                  <span>响应: {debugApiResponse}</span>
+              )}
+            </div>
+          </div>
+        </Card>
+
+        {/* Debug Info Collapsible */}
+        <Collapsible
+          open={isDebugOpen}
+          onOpenChange={setIsDebugOpen}
+          className="w-full border rounded-lg bg-card text-card-foreground shadow-sm shrink-0"
+        >
+          <div
+            className="flex items-center justify-between p-3 cursor-pointer hover:bg-muted/50 transition-colors"
+            onClick={() => setIsDebugOpen(!isDebugOpen)}
+          >
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <Activity className="w-4 h-4" />
+              系统状态监控
+            </h3>
+            {isDebugOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+          </div>
+          <CollapsibleContent>
+            <div className="p-3 pt-0 border-t border-dashed mt-1 text-xs text-muted-foreground grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
+              <div className="flex justify-between">
+                <span>识别中：</span>
+                <span className="font-mono">{debugRealtimePartial || "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>入队数：</span>
+                <span className="font-mono">{debugQueueCount}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>最新识别：</span>
+                <span className="font-mono truncate max-w-[120px]">{debugAsrText || "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>最近入队：</span>
+                <span className="font-mono">{debugLastEnqueueAt ? new Date(debugLastEnqueueAt).toLocaleTimeString() : "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>音量RMS：</span>
+                <span className="font-mono">{debugRms || "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>说话中：</span>
+                <span className={`font-mono ${debugIsSpeaking ? "text-green-500 font-bold" : ""}`}>{debugIsSpeaking ? "是" : "否"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>分片大小：</span>
+                <span className="font-mono">{debugLastChunkBytes ? `${Math.round(debugLastChunkBytes / 1024)}KB` : "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>分片时间：</span>
+                <span className="font-mono">{debugLastChunkAt ? new Date(debugLastChunkAt).toLocaleTimeString() : "—"}</span>
+              </div>
+              <div className="flex justify-between col-span-1 sm:col-span-2">
+                <span>Mime：</span>
+                <span className="font-mono">{debugMimeType || "—"}</span>
+              </div>
+
+              <div className="col-span-1 sm:col-span-2 pt-2 border-t border-dashed border-gray-200 space-y-1">
+                <div className="flex justify-between text-orange-600">
+                  <span>API状态:</span>
+                  <span className="font-mono">{debugApiStatus}</span>
+                </div>
+                <div className="flex justify-between text-orange-600">
+                  <span>WAV原始:</span>
+                  <span className="font-mono">{debugWavSize}</span>
+                </div>
+                <div className="flex flex-col text-orange-600 gap-1">
+                  <span>响应预览:</span>
+                  <span className="font-mono text-[10px] break-all bg-muted/30 p-1 rounded">{debugApiResponse}</span>
                 </div>
                 {debugError && (
-                  <div className="text-red-500 font-bold mt-1">
+                  <div className="text-red-500 font-bold text-[10px] break-all bg-red-50 p-1 rounded mt-1">
                     错误: {debugError}
                   </div>
                 )}
               </div>
             </div>
-          </CardHeader>
-          <ScrollArea className="flex-1 min-h-0" ref={scrollRef}>
-            <div className="space-y-6 p-4">
-              {transcripts.length === 0 && (
-                <div className="text-center text-muted-foreground py-10">
-                  {isRecording ? "正在等待音频..." : "点击开始监听以获取实时字幕"}
-                </div>
-              )}
-              {transcripts.map((item) => (
-                <div key={item.id} className="flex flex-col gap-1 animate-in fade-in slide-in-from-bottom-2">
-                  <div className="text-sm text-muted-foreground">
-                    {item.timestamp.toLocaleTimeString()}
-                  </div>
-                  <div className="text-lg font-medium">{item.original}</div>
-                  <div className="text-lg text-primary">{item.translation}</div>
-                </div>
-              ))}
-            </div>
-          </ScrollArea>
-        </Card>
+          </CollapsibleContent>
+        </Collapsible>
       </main>
     </div>
   )
