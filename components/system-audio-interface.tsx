@@ -447,32 +447,90 @@ export function SystemAudioInterface() {
         clearTimeout(noAudioTimeoutRef.current)
         noAudioTimeoutRef.current = null
       }
-      if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getDisplayMedia) {
+
+      // 1. 优先尝试系统音频录制 (getDisplayMedia)
+      // 2. 如果不支持 (如移动端/WebView)，降级为麦克风录制 (getUserMedia)
+      let mediaStream: MediaStream | null = null
+      let isMicrophoneFallback = false
+
+      // 尝试 getDisplayMedia (系统内录)
+      if (navigator.mediaDevices?.getDisplayMedia) {
+        try {
+          mediaStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: true,
+          })
+        } catch (err: any) {
+           // 用户取消或拒绝，不再尝试麦克风
+           if (err.name === 'NotAllowedError') {
+             throw err
+           }
+           // 其他错误，尝试麦克风
+           console.log("getDisplayMedia failed, trying getUserMedia...", err)
+        }
+      }
+
+      // 如果 getDisplayMedia 失败或不支持，尝试 getUserMedia (麦克风)
+      if (!mediaStream) {
+        try {
+          // 兼容性 getUserMedia 获取
+          const getMedia = async (constraints: MediaStreamConstraints) => {
+             if (navigator.mediaDevices?.getUserMedia) {
+               return navigator.mediaDevices.getUserMedia(constraints)
+             }
+             // Legacy APIs
+             const legacyGetUserMedia = (navigator as any).getUserMedia || 
+                                        (navigator as any).webkitGetUserMedia || 
+                                        (navigator as any).mozGetUserMedia || 
+                                        (navigator as any).msGetUserMedia
+             
+             if (legacyGetUserMedia) {
+               return new Promise<MediaStream>((resolve, reject) => {
+                 legacyGetUserMedia.call(navigator, constraints, resolve, reject)
+               })
+             }
+             throw new Error("getUserMedia not supported")
+          }
+
+          mediaStream = await getMedia({
+            audio: true,
+            video: false
+          })
+          
+          isMicrophoneFallback = true
+          toast({
+            title: "已切换至麦克风模式",
+            description: "当前环境不支持系统内录，将通过麦克风采集声音。",
+            duration: 5000,
+          })
+        } catch (err) {
+          console.error("getUserMedia also failed:", err)
+        }
+      }
+
+      if (!mediaStream) {
         toast({
-          title: "当前浏览器不支持系统音频录制",
-          description: "请使用支持的浏览器（建议 Chrome/Edge）并重试。",
+          title: "无法开始录音",
+          description: "当前环境不支持音频录制，请检查麦克风权限或使用系统浏览器打开。",
           variant: "destructive",
         })
         return
       }
 
-      const displayStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true,
-      })
-
-      const audioTrack = displayStream.getAudioTracks()[0]
+      const audioTrack = mediaStream.getAudioTracks()[0]
       if (!audioTrack) {
         toast({
-          title: "未检测到系统音频",
-          description: "请在分享屏幕时勾选'分享系统音频'或'分享标签页音频'",
+          title: "未检测到音频",
+          description: isMicrophoneFallback 
+            ? "无法访问麦克风，请检查权限设置。" 
+            : "请在分享屏幕时勾选'分享系统音频'或'分享标签页音频'。",
           variant: "destructive",
         })
-        displayStream.getTracks().forEach((track) => track.stop())
+        mediaStream.getTracks().forEach((track) => track.stop())
         return
       }
 
-      setStream(displayStream)
+      setStream(mediaStream)
 
       // Setup Audio Context without forcing sample rate
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
@@ -536,7 +594,7 @@ export function SystemAudioInterface() {
       }
       checkVolume()
 
-      const videoTrack = displayStream.getVideoTracks()[0]
+      const videoTrack = mediaStream.getVideoTracks()[0]
       if (videoTrack) {
         videoTrack.onended = () => {
           stopRecording()
