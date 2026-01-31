@@ -17,6 +17,14 @@ function createOutTradeNo() {
   return `MS${Date.now()}${suffix}`
 }
 
+async function hasOpenidColumn(pool: Awaited<ReturnType<typeof getMariaPool>>, tableName: string) {
+  const rows = await pool.query(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = '_openid'",
+    [tableName]
+  )
+  return Array.isArray(rows) && rows.length > 0
+}
+
 export async function POST(request: NextRequest) {
   try {
     const payload = await request.json()
@@ -38,10 +46,18 @@ export async function POST(request: NextRequest) {
 
     if (target === "tencent") {
       const pool = await getMariaPool()
-      await pool.query(
-        "INSERT INTO `orders` (id, userId, amountCny, subject, status, provider, outTradeNo, tradeNo, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
-        [crypto.randomUUID(), userId, amount.toFixed(2), subject, "pending", "alipay", outTradeNo, null]
-      )
+      const hasOpenid = await hasOpenidColumn(pool, "orders")
+      if (hasOpenid) {
+        await pool.query(
+          "INSERT INTO `orders` (id, userId, amountCny, subject, status, provider, outTradeNo, tradeNo, createdAt, updatedAt, _openid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?)",
+          [crypto.randomUUID(), userId, amount.toFixed(2), subject, "pending", "alipay", outTradeNo, null, ""]
+        )
+      } else {
+        await pool.query(
+          "INSERT INTO `orders` (id, userId, amountCny, subject, status, provider, outTradeNo, tradeNo, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
+          [crypto.randomUUID(), userId, amount.toFixed(2), subject, "pending", "alipay", outTradeNo, null]
+        )
+      }
     } else {
       const prisma = (await getPrisma()) as any
       await prisma.order.create({

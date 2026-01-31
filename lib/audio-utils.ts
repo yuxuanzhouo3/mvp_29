@@ -88,8 +88,81 @@ async function decodeAudioBlobTo16kMonoFloat32(audioBlob: Blob): Promise<Float32
   } finally {
     try {
       await audioContext.close()
-    } catch {}
+    } catch { }
   }
+}
+
+function writeWavString(view: DataView, offset: number, value: string): void {
+  for (let i = 0; i < value.length; i += 1) {
+    view.setUint8(offset + i, value.charCodeAt(i))
+  }
+}
+
+export async function resampleTo16k(audioData: Float32Array, originalSampleRate: number): Promise<Float32Array> {
+  if (originalSampleRate === 16000) return audioData
+
+  const targetSampleRate = 16000
+  const duration = audioData.length / originalSampleRate
+  const offlineCtx = new OfflineAudioContext(1, Math.ceil(duration * targetSampleRate), targetSampleRate)
+
+  const buffer = offlineCtx.createBuffer(1, audioData.length, originalSampleRate)
+  buffer.copyToChannel(audioData, 0)
+
+  const source = offlineCtx.createBufferSource()
+  source.buffer = buffer
+  source.connect(offlineCtx.destination)
+  source.start()
+
+  const renderedBuffer = await offlineCtx.startRendering()
+  return renderedBuffer.getChannelData(0)
+}
+
+export function encodeFloat32ToWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
+  const buffer = new ArrayBuffer(44 + samples.length * 2)
+  const view = new DataView(buffer)
+  writeWavString(view, 0, "RIFF")
+  view.setUint32(4, 36 + samples.length * 2, true)
+  writeWavString(view, 8, "WAVE")
+  writeWavString(view, 12, "fmt ")
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, 1, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * 2, true)
+  view.setUint16(32, 2, true)
+  view.setUint16(34, 16, true)
+  writeWavString(view, 36, "data")
+  view.setUint32(40, samples.length * 2, true)
+  let offset = 44
+  for (let i = 0; i < samples.length; i += 1) {
+    const value = Math.max(-1, Math.min(1, samples[i] ?? 0))
+    view.setInt16(offset, value < 0 ? value * 0x8000 : value * 0x7fff, true)
+    offset += 2
+  }
+  return buffer
+}
+
+export function encodeFloat32ToPcm16le(samples: Float32Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(samples.length * 2)
+  const view = new DataView(buffer)
+  let offset = 0
+  for (let i = 0; i < samples.length; i += 1) {
+    const value = Math.max(-1, Math.min(1, samples[i] ?? 0))
+    view.setInt16(offset, value < 0 ? value * 0x8000 : value * 0x7fff, true)
+    offset += 2
+  }
+  return buffer
+}
+
+async function convertAudioBlobToWav(audioBlob: Blob): Promise<Blob> {
+  const audio = await decodeAudioBlobTo16kMonoFloat32(audioBlob)
+  const wavBuffer = encodeFloat32ToWav(audio, 16000)
+  return new Blob([wavBuffer], { type: "audio/wav" })
+}
+
+export async function convertAudioBlobToPcm16le(audioBlob: Blob): Promise<ArrayBuffer> {
+  const audio = await decodeAudioBlobTo16kMonoFloat32(audioBlob)
+  return encodeFloat32ToPcm16le(audio)
 }
 
 async function getWhisperPipeline(): Promise<WhisperAsrPipeline> {
@@ -110,6 +183,9 @@ async function getWhisperPipeline(): Promise<WhisperAsrPipeline> {
 }
 
 export async function transcribeAudio(audioBlob: Blob, language: string): Promise<string> {
+  if (audioBlob.size < 1024) {
+    return ""
+  }
   if (typeof window !== "undefined" && !isTencentDeploy()) {
     try {
       const transcriber = await getWhisperPipeline()
@@ -117,15 +193,44 @@ export async function transcribeAudio(audioBlob: Blob, language: string): Promis
       const hint = getWhisperLanguageHint(language)
       const output = await transcriber(audio, { ...(hint ? { language: hint } : {}), task: "transcribe" })
       const text = typeof output?.text === "string" ? output.text.trim() : ""
-      if (text) return text
-      throw new Error("Empty transcription result")
+      return text
     } catch {
       // fall through to server-side transcription if whisper fails
     }
   }
 
+  let uploadBlob = audioBlob
+  let uploadName = "recording.webm"
+
+  // 如果已经是 WAV 格式，则跳过转换，避免重复解码/编码带来的性能损耗和潜在错误
+  const isWav = audioBlob.type === "audio/wav" || audioBlob.type === "audio/x-wav"
+
+  if (typeof window !== "undefined" && !isWav) {
+    try {
+      uploadBlob = await convertAudioBlobToWav(audioBlob)
+      uploadName = "recording.wav"
+    } catch {
+      const normalizedType = String(audioBlob.type || "").toLowerCase()
+      if (normalizedType.includes("ogg")) {
+        uploadName = "recording.ogg"
+      } else if (normalizedType.includes("wav")) {
+        uploadName = "recording.wav"
+      } else if (normalizedType.includes("mp3") || normalizedType.includes("mpeg")) {
+        uploadName = "recording.mp3"
+      } else if (normalizedType.includes("m4a") || normalizedType.includes("mp4")) {
+        uploadName = "recording.m4a"
+      } else if (normalizedType.includes("aac")) {
+        uploadName = "recording.aac"
+      } else {
+        return ""
+      }
+    }
+  } else if (isWav) {
+    uploadName = "recording.wav"
+  }
+
   const formData = new FormData()
-  formData.append("audio", audioBlob, "recording.webm")
+  formData.append("audio", uploadBlob, uploadName)
   formData.append("language", language)
 
   const maxAttempts = 3
@@ -137,7 +242,7 @@ export async function transcribeAudio(audioBlob: Blob, language: string): Promis
 
     if (response.ok) {
       const data = await parseJsonResponse<{ text?: unknown }>(response)
-      if (typeof data.text === "string") return data.text
+      if (typeof data.text === "string") return data.text.trim()
       throw new Error("接口返回异常：缺少 text 字段")
     }
 
@@ -148,6 +253,15 @@ export async function transcribeAudio(audioBlob: Blob, language: string): Promis
     }
 
     const message = await parseErrorMessage(response)
+    const normalized = message.toLowerCase()
+    if (
+      normalized.includes("empty transcription result") ||
+      normalized.includes("audio is empty") ||
+      normalized.includes("audio data empty") ||
+      normalized.includes("audio decoding failed")
+    ) {
+      return ""
+    }
     throw new Error(message || "转写失败")
   }
 

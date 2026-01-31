@@ -25,13 +25,23 @@ export default function AuthPage() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
+    const email = loginEmail.trim()
+    const password = loginPassword.trim()
+    if (!email || !password) {
+      toast({
+        variant: "destructive",
+        title: "登录失败",
+        description: "请输入邮箱和密码",
+      })
+      return
+    }
     setIsLoading(true)
 
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+        body: JSON.stringify({ email, password }),
       })
 
       const data = await res.json()
@@ -65,6 +75,17 @@ export default function AuthPage() {
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
+    const name = registerName.trim()
+    const email = registerEmail.trim()
+    const password = registerPassword.trim()
+    if (!email || !password) {
+      toast({
+        variant: "destructive",
+        title: "注册失败",
+        description: "请输入邮箱和密码",
+      })
+      return
+    }
     setIsLoading(true)
 
     try {
@@ -72,9 +93,9 @@ export default function AuthPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: registerName,
-          email: registerEmail,
-          password: registerPassword,
+          name,
+          email,
+          password,
         }),
       })
 

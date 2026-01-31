@@ -10,6 +10,14 @@ function normalizeParamValue(value: FormDataEntryValue) {
   return ""
 }
 
+async function hasOpenidColumn(pool: Awaited<ReturnType<typeof getMariaPool>>, tableName: string) {
+  const rows = await pool.query(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = '_openid'",
+    [tableName]
+  )
+  return Array.isArray(rows) && rows.length > 0
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData()
@@ -64,19 +72,37 @@ export async function POST(request: NextRequest) {
       if (tradeNo) {
         const existing = await pool.query("SELECT id FROM `payments` WHERE tradeNo = ? LIMIT 1", [tradeNo])
         if (!Array.isArray(existing) || existing.length === 0) {
-          await pool.query(
-            "INSERT INTO `payments` (id, orderId, provider, tradeNo, buyerId, payAmountCny, payTime, rawNotify, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())",
-            [
-              crypto.randomUUID(),
-              order.id,
-              "alipay",
-              tradeNo,
-              buyerId,
-              totalAmount || null,
-              payTime ? new Date(payTime) : null,
-              JSON.stringify(params),
-            ]
-          )
+          const hasOpenid = await hasOpenidColumn(pool, "payments")
+          if (hasOpenid) {
+            await pool.query(
+              "INSERT INTO `payments` (id, orderId, provider, tradeNo, buyerId, payAmountCny, payTime, rawNotify, createdAt, _openid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)",
+              [
+                crypto.randomUUID(),
+                order.id,
+                "alipay",
+                tradeNo,
+                buyerId,
+                totalAmount || null,
+                payTime ? new Date(payTime) : null,
+                JSON.stringify(params),
+                "",
+              ]
+            )
+          } else {
+            await pool.query(
+              "INSERT INTO `payments` (id, orderId, provider, tradeNo, buyerId, payAmountCny, payTime, rawNotify, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())",
+              [
+                crypto.randomUUID(),
+                order.id,
+                "alipay",
+                tradeNo,
+                buyerId,
+                totalAmount || null,
+                payTime ? new Date(payTime) : null,
+                JSON.stringify(params),
+              ]
+            )
+          }
         }
       }
     } else {

@@ -11,6 +11,11 @@ export type AudioRecorderState = {
 }
 
 export function useAudioRecorder() {
+  const isTencentDeploy =
+    typeof process !== "undefined" &&
+    String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
+      .trim()
+      .toLowerCase() === "tencent"
   const [state, setState] = useState<AudioRecorderState>({
     isRecording: false,
     isPaused: false,
@@ -29,9 +34,15 @@ export function useAudioRecorder() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
 
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: "audio/webm",
-      })
+      const mimeTypeCandidates = isTencentDeploy
+        ? ["audio/ogg;codecs=opus", "audio/ogg", "audio/webm;codecs=opus", "audio/webm"]
+        : ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg"]
+      const supportedMimeType = mimeTypeCandidates.find((candidate) =>
+        MediaRecorder.isTypeSupported(candidate)
+      )
+      const mediaRecorder = supportedMimeType
+        ? new MediaRecorder(stream, { mimeType: supportedMimeType })
+        : new MediaRecorder(stream)
       mediaRecorderRef.current = mediaRecorder
       audioChunksRef.current = []
 

@@ -17,15 +17,6 @@ function sanitizeChineseTranslation(text: string): string {
   }
   out = removeRomanizationParens(out)
 
-  const firstLatinIdx = out.search(/[A-Za-zÀ-ÿ]/)
-  if (firstLatinIdx > 0) {
-    const head = out.slice(0, firstLatinIdx)
-    const tail = out.slice(firstLatinIdx)
-    const hasCjkInHead = /[\u4e00-\u9fff]/.test(head)
-    const hasCjkInTail = /[\u4e00-\u9fff]/.test(tail)
-    if (hasCjkInHead && !hasCjkInTail) out = head
-  }
-
   return out.replaceAll(/\s+/g, " ").trim()
 }
 
@@ -39,6 +30,14 @@ function sanitizeTranslatedText(text: string, targetLabel: string): string {
 function resolveEnvValue(primaryKey: string, fallbackKey: string): string | undefined {
   const env = process.env as Record<string, string | undefined>
   return env[primaryKey] ?? env[fallbackKey]
+}
+
+function normalizeApiKey(value: string | undefined): string {
+  const raw = typeof value === "string" ? value.trim() : ""
+  if (!raw) return ""
+  const lower = raw.toLowerCase()
+  if (lower === "your-api-key" || lower === "your_api_key" || lower === "changeme") return ""
+  return raw
 }
 
 function resolveMistralTranslateModelId(value: unknown): string {
@@ -92,54 +91,68 @@ export async function POST(req: Request) {
 
     const prompt =
       targetLabel === "Chinese"
-        ? `Translate the following text from ${sourceLabel} to Simplified Chinese. Output ONLY Simplified Chinese characters. Do NOT include pinyin, romanization, English, notes, explanations, quotes, labels, or parentheses.\n\nText: ${text}`
+        ? `Translate the following text from ${sourceLabel} to Simplified Chinese. Return only the translated text. Do NOT include pinyin, romanization, notes, explanations, quotes, labels, or parentheses. Preserve proper nouns and names; if a name has no common Chinese translation, keep it in the original script.\n\nText: ${text}`
         : `Translate the following text from ${sourceLabel} to ${targetLabel}. Only return the translated text in the target language, nothing else.\n\nText: ${text}`
 
     let modelId = ""
     let translatedText = ""
 
     if (isTencent) {
-      const zhipuApiKey = resolveEnvValue("TENCENT_ZHIPU_API_KEY", "ZHIPU_API_KEY")
-      const dashscopeApiKey = resolveEnvValue("TENCENT_DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY")
+      const zhipuApiKey = normalizeApiKey(resolveEnvValue("TENCENT_ZHIPU_API_KEY", "ZHIPU_API_KEY"))
+      const dashscopeApiKey = normalizeApiKey(resolveEnvValue("TENCENT_DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY"))
 
-      if (zhipuApiKey && zhipuApiKey.trim()) {
-        modelId =
-          resolveEnvValue("TENCENT_ZHIPU_TRANSLATE_MODEL", "ZHIPU_TRANSLATE_MODEL")?.trim() || "glm-4.7-flash"
-        const baseURL =
-          resolveEnvValue("TENCENT_ZHIPU_BASE_URL", "ZHIPU_BASE_URL")?.trim() || "https://open.bigmodel.cn/api/paas/v4"
-        const resp = await fetch(`${baseURL}/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${zhipuApiKey}`,
-          },
-          body: JSON.stringify({
-            model: modelId,
-            messages: [
-              {
-                role: "user",
-                content: prompt,
-              },
-            ],
-            thinking: { type: "disabled" },
-            temperature: 0.3,
-            max_tokens: 1000,
-          }),
-        })
-        if (!resp.ok) {
-          return Response.json({ error: "Failed to call Zhipu API" }, { status: 500 })
+      if (!zhipuApiKey && !dashscopeApiKey) {
+        return Response.json({ error: "Missing Zhipu/DashScope API key" }, { status: 500 })
+      }
+
+      if (zhipuApiKey) {
+        try {
+          modelId =
+            resolveEnvValue("TENCENT_ZHIPU_TRANSLATE_MODEL", "ZHIPU_TRANSLATE_MODEL")?.trim() || "glm-4-flash"
+          const baseURL =
+            resolveEnvValue("TENCENT_ZHIPU_BASE_URL", "ZHIPU_BASE_URL")?.trim() || "https://open.bigmodel.cn/api/paas/v4"
+          const resp = await fetch(`${baseURL}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${zhipuApiKey}`,
+            },
+            body: JSON.stringify({
+              model: modelId,
+              messages: [
+                {
+                  role: "user",
+                  content: prompt,
+                },
+              ],
+              // thinking: { type: "disabled" }, // Remove to improve compatibility with models that don't support it
+              temperature: 0.3,
+              max_tokens: 1000,
+            }),
+          })
+          if (!resp.ok) {
+            const errorText = await resp.text()
+            console.error(`[Zhipu API Error] Status: ${resp.status}, Body: ${errorText}`)
+            return Response.json({ error: `Failed to call Zhipu API: ${resp.status} ${errorText}` }, { status: 500 })
+          }
+          const data = (await resp.json()) as Record<string, unknown>
+          const choices = data.choices as unknown
+          if (Array.isArray(choices) && choices.length > 0) {
+            const msg = choices[0]?.message as Record<string, unknown>
+            const content = typeof msg?.content === "string" ? msg.content : ""
+            const reasoning = typeof msg?.reasoning_content === "string" ? msg.reasoning_content : ""
+            translatedText = content || reasoning
+          } else {
+            translatedText = ""
+          }
+        } catch (error) {
+          if (!dashscopeApiKey) {
+            throw error
+          }
         }
-        const data = (await resp.json()) as Record<string, unknown>
-        const choices = data.choices as unknown
-        if (Array.isArray(choices) && choices.length > 0) {
-          const msg = choices[0]?.message as Record<string, unknown>
-          const content = typeof msg?.content === "string" ? msg.content : ""
-          const reasoning = typeof msg?.reasoning_content === "string" ? msg.reasoning_content : ""
-          translatedText = content || reasoning
-        } else {
-          translatedText = ""
-        }
-      } else if (dashscopeApiKey && dashscopeApiKey.trim()) {
+      }
+
+      if (!translatedText && dashscopeApiKey) {
         modelId =
           resolveEnvValue("TENCENT_DASHSCOPE_TRANSLATE_MODEL", "DASHSCOPE_TRANSLATE_MODEL")?.trim() || "qwen-plus"
         const baseURL =
@@ -153,8 +166,6 @@ export async function POST(req: Request) {
           temperature: 0.3,
         })
         translatedText = result.text
-      } else {
-        return Response.json({ error: "Missing Zhipu/DashScope API key" }, { status: 500 })
       }
     } else {
       modelId = resolveMistralTranslateModelId(process.env.MISTRAL_TRANSLATE_MODEL ?? "Mistral-7B-Instruct-v0.3")
