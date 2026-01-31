@@ -37,7 +37,7 @@ const messages: Partial<Record<UiLocale, Record<string, MessageValue>>> = {
     "dashboard.room.feature3": "适合跨语言会议交流",
     "dashboard.system.title": "系统同声传译",
     "dashboard.system.desc": "捕获系统音频，实时翻译视频会议或媒体内容",
-    "dashboard.system.feature1": "监听电脑系统声音",
+    "dashboard.system.feature1": "监听设备系统声音",
     "dashboard.system.feature2": "适合观看外语视频/会议",
     "dashboard.system.feature3": "无需麦克风输入",
     "common.leave": "离开",
