@@ -50,9 +50,7 @@ export function LandingPage() {
       <section className="min-h-screen flex flex-col relative">
         <div className="container mx-auto p-4 md:p-8 flex justify-between items-center z-10">
           <div className="flex items-center gap-4">
-             {/* Logo or Brand Name could go here */}
-          </div>
-          <div className="flex items-center gap-4">
+            {/* Logo or Brand Name could go here */}
             {user ? (
               <Button variant="ghost" size="sm" className="gap-2" onClick={handleLogout}>
                 <LogOut className="w-4 h-4" />
@@ -64,6 +62,8 @@ export function LandingPage() {
                 {t("admin.login")}
               </Button>
             )}
+          </div>
+          <div className="flex items-center gap-4">
             <UiLanguageSelector />
           </div>
         </div>

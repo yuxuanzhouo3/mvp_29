@@ -1,5 +1,6 @@
 "use client"
 
+import { useMemo } from "react"
 import { Users, Globe, UserX } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -35,7 +36,26 @@ type UserListProps = {
 }
 
 export function UserList({ users, currentUserId, adminUserId = null, canKick = false, onKick }: UserListProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  
+  const displayNames = useMemo(() => {
+    try {
+      return new Intl.DisplayNames([locale === 'zh' ? 'zh-CN' : locale === 'en' ? 'en-US' : locale], { type: 'language' })
+    } catch {
+      return null
+    }
+  }, [locale])
+
+  const getDisplayLanguage = (code: string) => {
+    if (!code) return ""
+    if (code === "auto" || code === "自动识别") return locale === "zh" ? "自动识别" : "Auto Detect"
+    try {
+      return displayNames?.of(code) || code
+    } catch {
+      return code
+    }
+  }
+
   return (
     <Card className="h-full flex flex-col overflow-hidden">
       <CardHeader className="pb-3 shrink-0">
@@ -46,7 +66,7 @@ export function UserList({ users, currentUserId, adminUserId = null, canKick = f
       </CardHeader>
       <CardContent className="space-y-3 flex-1 overflow-y-auto min-h-0">
         {users.map((user) => (
-          <div key={user.id} className="flex items-start gap-3 p-2 rounded-lg hover:bg-muted/50 transition-colors">
+          <div key={user.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted/50 transition-colors">
             <Avatar className="w-10 h-10">
               <AvatarImage src={user.avatar || "/placeholder.svg"} alt={user.name} />
               <AvatarFallback>{user.name[0]?.toUpperCase()}</AvatarFallback>
@@ -61,7 +81,7 @@ export function UserList({ users, currentUserId, adminUserId = null, canKick = f
               <div className="flex items-center gap-1 mt-1">
                 <Globe className="w-3 h-3 text-muted-foreground" />
                 <p className="text-xs text-muted-foreground">
-                  {user.sourceLanguage}
+                  {getDisplayLanguage(user.sourceLanguage)}
                 </p>
               </div>
             </div>

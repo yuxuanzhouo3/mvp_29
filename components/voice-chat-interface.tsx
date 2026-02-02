@@ -4,7 +4,6 @@ import { useState, useCallback, useEffect, useRef } from "react"
 import { Header } from "@/components/header"
 import { ChatArea } from "@/components/chat-area"
 import { VoiceControls } from "@/components/voice-controls"
-import { LanguageSelector } from "@/components/language-selector"
 import { RoomJoin } from "@/components/room-join"
 import { UserList, type User } from "@/components/user-list"
 import { AdSlot } from "@/components/ad-slot"
@@ -327,7 +326,7 @@ export function VoiceChatInterface() {
 
   useEffect(() => {
     if (!isInRoom || !roomId || !roomUserId) return
-    const source = "自动识别"
+    const source = "auto"
     const target = userLanguage.name
     const last = lastRoomLanguageUpdateRef.current
     if (last && last.roomId === roomId && last.userId === roomUserId && last.source === source && last.target === target) return
@@ -956,23 +955,10 @@ export function VoiceChatInterface() {
                   <Settings className="w-4 h-4" />
                 </Button>
               ) : null}
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={handleLeaveRoom}
-                className="h-9 w-9 shrink-0"
-                aria-label={t("common.leave")}
-              >
-                <LogOut className="w-4 h-4" />
-              </Button>
             </div>
 
             <div className="shrink-0 px-2 lg:px-3 py-2 border-b border-border hidden lg:block">
-              <LanguageSelector
-                variant="compact"
-                language={userLanguage}
-                onLanguageChange={setUserLanguage}
-              />
+              {/* LanguageSelector removed as requested */}
             </div>
 
             <ChatArea
@@ -985,11 +971,7 @@ export function VoiceChatInterface() {
 
             <div className="shrink-0 px-2 lg:px-3 py-2 border-t border-border bg-background/50">
               <div className="mb-2 lg:hidden">
-                <LanguageSelector
-                  variant="compact"
-                  language={userLanguage}
-                  onLanguageChange={setUserLanguage}
-                />
+                {/* LanguageSelector removed as requested */}
               </div>
               {(isRecording || isProcessing) && (liveTranscript.trim() || !liveSpeechSupported) ? (
                 <div className="mb-2 rounded-lg border bg-background/70 px-3 py-2">

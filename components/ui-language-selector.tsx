@@ -41,7 +41,7 @@ export function UiLanguageSelector() {
         <SelectValue>
           <span className="flex items-center gap-2">
             <span>{currentLocale.flag}</span>
-            <span className="hidden sm:inline">{currentLocale.label}</span>
+            <span>{currentLocale.label}</span>
           </span>
         </SelectValue>
       </SelectTrigger>

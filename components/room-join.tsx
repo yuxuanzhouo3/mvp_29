@@ -194,29 +194,40 @@ export function RoomJoin({ onJoin }: RoomJoinProps) {
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4 relative">
       <Card className="w-full max-w-lg lg:max-w-xl">
-        <CardHeader className="text-center">
-          <div className="flex w-full justify-end gap-2 mb-2">
-            <Select value={locale} onValueChange={handleLocaleChange} disabled={isSavingLocale}>
-              <SelectTrigger className="w-[110px] h-9">
-                <SelectValue>
-                  <span className="flex items-center gap-2">
-                    <span>{currentLocale.flag}</span>
-                    <span className="hidden sm:inline">{currentLocale.label}</span>
-                  </span>
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {UI_LOCALES.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
+        <CardHeader className="text-center relative">
+          <div className="flex w-full justify-between items-start gap-2 mb-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-2 text-muted-foreground hover:text-foreground"
+              onClick={() => router.push("/")}
+            >
+              <LogOut className="w-4 h-4 rotate-180" />
+              {t("common.back")}
+            </Button>
+            <div className="flex gap-2">
+              <Select value={locale} onValueChange={handleLocaleChange} disabled={isSavingLocale}>
+                <SelectTrigger className="w-auto min-w-[110px] h-9">
+                  <SelectValue>
                     <span className="flex items-center gap-2">
-                      <span>{opt.flag}</span>
-                      <span>{opt.label}</span>
+                      <span>{currentLocale.flag}</span>
+                      <span>{currentLocale.label}</span>
                     </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <SettingsDialog />
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {UI_LOCALES.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      <span className="flex items-center gap-2">
+                        <span>{opt.flag}</span>
+                        <span>{opt.label}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <SettingsDialog />
+            </div>
           </div>
           <div className="w-16 h-16 rounded-2xl bg-primary mx-auto mb-4 flex items-center justify-center">
             <Users className="w-8 h-8 text-primary-foreground" />
@@ -350,15 +361,6 @@ export function RoomJoin({ onJoin }: RoomJoinProps) {
               </form>
             </TabsContent>
           </Tabs>
-
-          <Button
-            variant="ghost"
-            onClick={() => router.push("/")}
-            className="w-full text-muted-foreground hover:text-destructive mt-4"
-          >
-            <LogOut className="w-4 h-4 mr-2" />
-            {t("common.back")}
-          </Button>
         </CardContent>
       </Card>
     </div>
