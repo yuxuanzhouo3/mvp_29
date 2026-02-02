@@ -1,8 +1,9 @@
-import { Dashboard } from "@/components/dashboard"
+import { LandingPage } from "@/components/landing-page"
+
 export default function Home() {
   return (
     <main className="min-h-screen bg-background">
-      <Dashboard />
+      <LandingPage />
     </main>
   )
 }
