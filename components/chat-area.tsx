@@ -62,6 +62,13 @@ export function ChatArea({
     return `${message.id}-translated`
   }
 
+  const isMessagePlaying = (message: Message) => {
+    const targetId = getPrimaryPlayId(message)
+    if (playingMessageId !== targetId) return false
+    if (message.isUser && message.audioUrl) return Boolean(audioRef.current)
+    return isSpeaking
+  }
+
   const playAudioUrl = (targetId: string, url: string) => {
     stop()
     if (audioRef.current) {
@@ -256,9 +263,20 @@ export function ChatArea({
             )}
 
             <div
-              className={`max-w-[88%] md:max-w-[85%] lg:max-w-[82%] rounded-xl ${
+              className={`max-w-[88%] md:max-w-[85%] lg:max-w-[82%] rounded-xl transition-all ${
                 isEmbedded ? "p-3" : "p-4"
-              } ${message.isUser ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"}`}
+              } ${message.isUser ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"} ${
+                isMessagePlaying(message) ? "ring-2 ring-primary/50 animate-pulse" : ""
+              }`}
+              onClick={() => handlePlayTranslated(message)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault()
+                  handlePlayTranslated(message)
+                }
+              }}
             >
               {!message.isUser && <p className="text-xs font-semibold mb-2 opacity-70">{message.userName}</p>}
 
@@ -268,9 +286,12 @@ export function ChatArea({
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 -mt-1 hover:bg-background/20"
-                  onClick={() => handlePlayTranslated(message)}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    handlePlayTranslated(message)
+                  }}
                 >
-                  {playingMessageId === getPrimaryPlayId(message) && (message.isUser ? Boolean(audioRef.current) : isSpeaking) ? (
+                  {isMessagePlaying(message) ? (
                     <VolumeX className="w-4 h-4" />
                   ) : (
                     <Volume2 className="w-4 h-4" />
@@ -287,7 +308,10 @@ export function ChatArea({
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6 -mt-1 hover:bg-background/20"
-                        onClick={() => handlePlayOriginal(message)}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          handlePlayOriginal(message)
+                        }}
                       >
                         {playingMessageId === `${message.id}-original` ? (
                           <VolumeX className="w-4 h-4" />

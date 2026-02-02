@@ -306,6 +306,13 @@ export function VoiceChatInterface() {
   }, [resolveLanguageCode, user?.id, user?.user_metadata])
 
   useEffect(() => {
+    const nextCode = uiLocaleToLanguageCode()
+    const nextLanguage = SUPPORTED_LANGUAGES.find((lang) => lang.code === nextCode)
+    if (!nextLanguage) return
+    setUserLanguage((prev) => (prev.code === nextLanguage.code ? prev : nextLanguage))
+  }, [uiLocaleToLanguageCode])
+
+  useEffect(() => {
     const userKey = user?.id ?? "anon"
 
     if (typeof window !== "undefined") {
@@ -327,7 +334,7 @@ export function VoiceChatInterface() {
   useEffect(() => {
     if (!isInRoom || !roomId || !roomUserId) return
     const source = "auto"
-    const target = userLanguage.name
+    const target = userLanguage.code
     const last = lastRoomLanguageUpdateRef.current
     if (last && last.roomId === roomId && last.userId === roomUserId && last.source === source && last.target === target) return
     lastRoomLanguageUpdateRef.current = { roomId, userId: roomUserId, source, target }
@@ -587,7 +594,7 @@ export function VoiceChatInterface() {
           userId: participantId,
           userName: newUserName,
           sourceLanguage: "自动识别",
-          targetLanguage: userLanguage.name,
+          targetLanguage: userLanguage.code,
           avatarUrl: profile?.avatar_url ?? undefined,
           joinPassword: options?.joinPassword,
           createJoinMode: options?.createJoinMode,
@@ -955,6 +962,15 @@ export function VoiceChatInterface() {
                   <Settings className="w-4 h-4" />
                 </Button>
               ) : null}
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={handleLeaveRoom}
+                className="h-9 w-9 shrink-0"
+                aria-label={t("common.leave")}
+              >
+                <LogOut className="w-4 h-4" />
+              </Button>
             </div>
 
             <div className="shrink-0 px-2 lg:px-3 py-2 border-b border-border hidden lg:block">
