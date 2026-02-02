@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getMariaPool, getPrisma } from "@/lib/prisma"
+import { getMariaPool, getPrisma, isMariaDbConnectionError } from "@/lib/prisma"
 import bcrypt from "bcryptjs"
 import crypto from "node:crypto"
 
@@ -8,9 +8,9 @@ export const runtime = "nodejs"
 export async function POST(request: NextRequest) {
   try {
     const { email, password, name } = await request.json()
-    const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
-      .trim()
-      .toLowerCase()
+    const publicTarget = String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
+    const privateTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+    const isTencent = publicTarget === "tencent" || privateTarget === "tencent"
 
     if (!email || !password) {
       return NextResponse.json(
@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (target === "tencent") {
+    if (isTencent) {
       const pool = await getMariaPool()
       const existingRows = await pool.query(
         "SELECT id, email, name, password FROM `User` WHERE email = ? LIMIT 1",
@@ -79,6 +79,12 @@ export async function POST(request: NextRequest) {
       },
     })
   } catch (error) {
+    const publicTarget = String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
+    const privateTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+    const isTencent = publicTarget === "tencent" || privateTarget === "tencent"
+    if (isTencent && process.env.NODE_ENV !== "production" && isMariaDbConnectionError(error)) {
+      return NextResponse.json({ success: false, error: "Database unavailable" })
+    }
     console.error("Registration error:", error)
     return NextResponse.json(
       { success: false, error: "Internal server error" },

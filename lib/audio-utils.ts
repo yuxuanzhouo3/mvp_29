@@ -190,7 +190,7 @@ export async function transcribeAudio(audioBlob: Blob, language: string): Promis
     try {
       const transcriber = await getWhisperPipeline()
       const audio = await decodeAudioBlobTo16kMonoFloat32(audioBlob)
-      const hint = getWhisperLanguageHint(language)
+      const hint = language && language.toLowerCase() !== "auto" ? getWhisperLanguageHint(language) : undefined
       const output = await transcriber(audio, { ...(hint ? { language: hint } : {}), task: "transcribe" })
       const text = typeof output?.text === "string" ? output.text.trim() : ""
       return text
@@ -312,4 +312,18 @@ export async function translateText(
   const error: HttpError = new Error("翻译失败")
   error.status = 500
   throw error
+}
+
+export function detectLanguageFromText(text: string): string {
+  const value = typeof text === "string" ? text : ""
+  const trimmed = value.trim()
+  if (!trimmed) return "en-US"
+  if (/[\p{Script=Han}]/u.test(trimmed)) return "zh-CN"
+  if (/[\u3040-\u30FF]/.test(trimmed) || /[\u31F0-\u31FF]/.test(trimmed)) return "ja-JP"
+  if (/[\uAC00-\uD7AF]/.test(trimmed)) return "ko-KR"
+  if (/[ñÑáéíóúÁÉÍÓÚ¡¿]/.test(trimmed)) return "es-ES"
+  if (/[àâçéèêëîïôùûüÿÀÂÇÉÈÊËÎÏÔÙÛÜŸ]/.test(trimmed)) return "fr-FR"
+  if (/[äöüÄÖÜß]/.test(trimmed)) return "de-DE"
+  if (/[ãõÃÕáéíóúÁÉÍÓÚçÇ]/.test(trimmed)) return "pt-BR"
+  return "en-US"
 }

@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getMariaPool, getPrisma } from "@/lib/prisma"
+import { getMariaPool, getPrisma, isMariaDbConnectionError } from "@/lib/prisma"
 import bcrypt from "bcryptjs"
 import jwt from "jsonwebtoken"
 
@@ -110,6 +110,12 @@ export async function POST(request: NextRequest) {
 
     return response
   } catch (error) {
+    const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
+      .trim()
+      .toLowerCase()
+    if (target === "tencent" && process.env.NODE_ENV !== "production" && isMariaDbConnectionError(error)) {
+      return NextResponse.json({ success: false, error: "Database unavailable" })
+    }
     console.error("Login error:", error)
     return NextResponse.json(
       { success: false, error: "Internal server error" },

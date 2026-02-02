@@ -22,7 +22,7 @@ export function LanguageSelector({
     return (
       <div className="flex items-center gap-2">
         <div className="flex-1 min-w-0">
-          <div className="sr-only">{t("language.source")}</div>
+          <div className="sr-only">{t("language.target")}</div>
           <Select
             value={language.code}
             onValueChange={(code) => {
@@ -58,7 +58,7 @@ export function LanguageSelector({
     <div className="flex flex-col gap-3 bg-card rounded-xl p-4 border border-border">
       <div className="flex items-center gap-3">
         <div className="flex-1">
-          <label className="text-sm font-medium text-muted-foreground mb-2 block">{t("language.source")}</label>
+          <label className="text-sm font-medium text-muted-foreground mb-2 block">{t("language.target")}</label>
           <Select
             value={language.code}
             onValueChange={(code) => {

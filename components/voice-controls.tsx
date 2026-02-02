@@ -96,7 +96,8 @@ export function VoiceControls({
         console.error("[v0] Recording error:", error)
         isPressingRef.current = false
         shouldStopAfterStartRef.current = false
-        alert(t("voice.micPermissionAlert"))
+        const isInsecureContext = typeof window !== "undefined" && !window.isSecureContext
+        alert(t(isInsecureContext ? "voice.micSecureAlert" : "voice.micPermissionAlert"))
       }
     },
     [isProcessing, isRecording, startRecording, stopRecording, t],

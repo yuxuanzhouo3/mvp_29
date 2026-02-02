@@ -17,12 +17,23 @@ type HeaderProps = {
   onClearChat?: () => void
   messageCount?: number
   onSettingsChange?: (settings: AppSettings) => void
+  onProfileSaved?: (payload: { displayName: string; avatarUrl: string }) => void
   roomId?: string
+  roomUserId?: string
   userCount?: number
   onShowUsers?: () => void
 }
 
-export function Header({ onClearChat, messageCount = 0, onSettingsChange, roomId, userCount, onShowUsers }: HeaderProps) {
+export function Header({
+  onClearChat,
+  messageCount = 0,
+  onSettingsChange,
+  onProfileSaved,
+  roomId,
+  roomUserId,
+  userCount,
+  onShowUsers,
+}: HeaderProps) {
   const { profile, user, isLoading, signOut } = useAuth()
   const router = useRouter()
   const { locale, setLocale, t } = useI18n()
@@ -135,12 +146,12 @@ export function Header({ onClearChat, messageCount = 0, onSettingsChange, roomId
                 <span className="hidden xl:inline">{t("common.clearChat")}</span>
               </Button>
             )}
-            <SettingsDialog onSettingsChange={onSettingsChange} />
+            <SettingsDialog onSettingsChange={onSettingsChange} roomId={roomId} roomUserId={roomUserId} onProfileSaved={onProfileSaved} />
           </div>
 
           {/* Mobile Actions */}
           <div className="lg:hidden flex items-center gap-2">
-            <SettingsDialog onSettingsChange={onSettingsChange} />
+            <SettingsDialog onSettingsChange={onSettingsChange} roomId={roomId} roomUserId={roomUserId} onProfileSaved={onProfileSaved} />
             <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
               <SheetTrigger asChild>
                 <Button variant="ghost" size="icon">

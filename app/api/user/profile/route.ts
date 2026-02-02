@@ -1,13 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getMariaPool } from "@/lib/prisma"
+import { getMariaPool, isMariaDbConnectionError } from "@/lib/prisma"
 
 export const runtime = "nodejs"
 
 const isTencentTarget = () => {
-  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
-    .trim()
-    .toLowerCase()
-  return target === "tencent"
+  const publicTarget = String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const privateTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+  return publicTarget === "tencent" || privateTarget === "tencent"
 }
 
 const resolveDisplayName = (value: unknown): string | null => {
@@ -36,6 +35,9 @@ export async function GET(request: NextRequest) {
     const displayName = user?.name ?? null
     return NextResponse.json({ success: true, displayName })
   } catch (error) {
+    if (isTencentTarget() && process.env.NODE_ENV !== "production" && isMariaDbConnectionError(error)) {
+      return NextResponse.json({ success: true, displayName: null })
+    }
     console.error("Get profile error:", error)
     return NextResponse.json({ success: false, error: "Internal server error" }, { status: 500 })
   }
@@ -70,6 +72,9 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json({ success: true, displayName })
   } catch (error) {
+    if (isTencentTarget() && process.env.NODE_ENV !== "production" && isMariaDbConnectionError(error)) {
+      return NextResponse.json({ success: false, displayName: null, error: "Database unavailable" })
+    }
     console.error("Save profile error:", error)
     return NextResponse.json({ success: false, error: "Internal server error" }, { status: 500 })
   }

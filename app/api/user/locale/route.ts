@@ -1,14 +1,13 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getMariaPool } from "@/lib/prisma"
+import { getMariaPool, isMariaDbConnectionError } from "@/lib/prisma"
 import { normalizeLocale, UI_LOCALES, type UiLocale } from "@/lib/i18n"
 
 export const runtime = "nodejs"
 
 const isTencentTarget = () => {
-  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
-    .trim()
-    .toLowerCase()
-  return target === "tencent"
+  const publicTarget = String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const privateTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+  return publicTarget === "tencent" || privateTarget === "tencent"
 }
 
 const resolveLocale = (value: unknown): UiLocale | null => {
@@ -72,6 +71,9 @@ export async function GET(request: NextRequest) {
     const uiLocale = user?.uiLocale ?? null
     return NextResponse.json({ success: true, uiLocale })
   } catch (error) {
+    if (isTencentTarget() && process.env.NODE_ENV !== "production" && isMariaDbConnectionError(error)) {
+      return NextResponse.json({ success: true, uiLocale: null })
+    }
     console.error("Get locale error:", error)
     return NextResponse.json({ success: false, error: "Internal server error" }, { status: 500 })
   }
@@ -111,6 +113,9 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json({ success: true, uiLocale })
   } catch (error) {
+    if (isTencentTarget() && process.env.NODE_ENV !== "production" && isMariaDbConnectionError(error)) {
+      return NextResponse.json({ success: false, uiLocale: null, error: "Database unavailable" })
+    }
     console.error("Save locale error:", error)
     return NextResponse.json({ success: false, error: "Internal server error" }, { status: 500 })
   }

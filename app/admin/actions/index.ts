@@ -14,10 +14,9 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PU
 const getSupabase = () => createClient(supabaseUrl, supabaseKey)
 
 const isTencentTarget = () => {
-  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
-    .trim()
-    .toLowerCase()
-  return target === "tencent"
+  const publicTarget = String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const privateTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+  return publicTarget === "tencent" || privateTarget === "tencent"
 }
 
 // 删除用户

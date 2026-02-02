@@ -23,6 +23,9 @@ import { useI18n } from "@/components/i18n-provider"
 
 type SettingsDialogProps = {
   onSettingsChange?: (settings: AppSettings) => void
+  roomId?: string
+  roomUserId?: string
+  onProfileSaved?: (payload: { displayName: string; avatarUrl: string }) => void
 }
 
 export type AppSettings = {
@@ -34,7 +37,7 @@ export type AppSettings = {
   platform: "web" | "wechat" | "android" | "ios" | "desktop"
 }
 
-export function SettingsDialog({ onSettingsChange }: SettingsDialogProps) {
+export function SettingsDialog({ onSettingsChange, roomId, roomUserId, onProfileSaved }: SettingsDialogProps) {
   const { toast } = useToast()
   const { user, profile, updateProfile } = useAuth()
   const { t } = useI18n()
@@ -146,6 +149,22 @@ export function SettingsDialog({ onSettingsChange }: SettingsDialogProps) {
         window.localStorage.setItem("voicelink_display_name", nextDisplayName)
       }
 
+      if (roomId && roomUserId) {
+        const res = await fetch("/api/rooms", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "update_user",
+            roomId,
+            userId: roomUserId,
+            userName: nextDisplayName,
+            avatarUrl: nextAvatarUrl || undefined,
+          }),
+        })
+        if (!res.ok) throw new Error("Update room profile failed")
+      }
+
+      onProfileSaved?.({ displayName: nextDisplayName, avatarUrl: nextAvatarUrl })
       toast({ title: t("settings.profileSavedTitle"), description: t("settings.profileSavedDesc") })
     } catch (e) {
       toast({

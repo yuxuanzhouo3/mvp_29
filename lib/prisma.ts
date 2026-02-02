@@ -13,8 +13,10 @@ const globalForPrisma = globalThis as unknown as {
 
 function resolveEnvValue(key: string, tencentKey: string): string | undefined {
   const env = process.env as Record<string, string | undefined>
-  const target = String(env.DEPLOY_TARGET ?? env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
-  if (target === "tencent") return env[tencentKey] ?? env[key]
+  const publicTarget = String(env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const privateTarget = String(env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const isTencent = publicTarget === "tencent" || privateTarget === "tencent"
+  if (isTencent) return env[tencentKey] ?? env[key]
   return env[key] ?? env[tencentKey]
 }
 
@@ -47,8 +49,10 @@ function resolveDatabaseUrl(): string {
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is not set")
   }
-  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
-  if (target === "tencent" && process.env.NODE_ENV !== "production") {
+  const publicTarget = String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const privateTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const isTencent = publicTarget === "tencent" || privateTarget === "tencent"
+  if (isTencent && process.env.NODE_ENV !== "production") {
     const currentUrl = new URL(databaseUrl)
     if (isPrivateHost(currentUrl.hostname)) {
       const envPath = path.join(process.cwd(), ".env.local")
@@ -63,6 +67,34 @@ function resolveDatabaseUrl(): string {
     }
   }
   return databaseUrl
+}
+
+export function isMariaDbConnectionError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false
+  const err = error as {
+    code?: string
+    errno?: number
+    sqlState?: string
+    sqlMessage?: string
+    message?: string
+    cause?: unknown
+  }
+  const code = String(err.code ?? "")
+  const message = String(err.sqlMessage ?? err.message ?? "")
+  if (code === "ER_GET_CONNECTION_TIMEOUT" || code === "ER_CONNECTION_TIMEOUT") return true
+  if (message.includes("pool timeout") || message.includes("Connection timeout")) return true
+  const cause = err.cause as {
+    code?: string
+    sqlMessage?: string
+    message?: string
+  } | null
+  if (cause) {
+    const causeCode = String(cause.code ?? "")
+    const causeMessage = String(cause.sqlMessage ?? cause.message ?? "")
+    if (causeCode === "ER_GET_CONNECTION_TIMEOUT" || causeCode === "ER_CONNECTION_TIMEOUT") return true
+    if (causeMessage.includes("pool timeout") || causeMessage.includes("Connection timeout")) return true
+  }
+  return false
 }
 
 export async function getMariaPool(): Promise<MariaDbPool> {
@@ -96,7 +128,12 @@ export async function getPrisma(): Promise<PrismaClientLike> {
   if (globalForPrisma.prisma) return globalForPrisma.prisma
 
   const databaseUrl = resolveDatabaseUrl()
-  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
+  // Ensure DATABASE_URL is set in process.env for Prisma to pick it up
+  process.env.DATABASE_URL = databaseUrl
+
+  const publicTarget = String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const privateTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const isTencent = publicTarget === "tencent" || privateTarget === "tencent"
 
   if (process.env.DATABASE_URL !== databaseUrl) {
     process.env.DATABASE_URL = databaseUrl
@@ -105,12 +142,12 @@ export async function getPrisma(): Promise<PrismaClientLike> {
     process.env.TENCENT_DATABASE_URL = databaseUrl
   }
   const { PrismaClient } = await import("@prisma/client")
-  if (target === "tencent") {
+  if (isTencent) {
     const url = new URL(databaseUrl)
     if (!globalForPrisma.prismaLogOnce && process.env.NODE_ENV !== "production") {
       const port = url.port || "3306"
       const database = url.pathname.replace(/^\//, "")
-      console.log("[Prisma] Using MariaDB", { host: url.hostname, port, database, target })
+      console.log("[Prisma] Using MariaDB", { host: url.hostname, port, database, target: "tencent" })
       globalForPrisma.prismaLogOnce = true
     }
     const { PrismaMariaDb } = await import("@prisma/adapter-mariadb")

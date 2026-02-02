@@ -35,6 +35,7 @@ export function ChatArea({
   const shouldAutoScrollRef = useRef(true)
   const lastScrollTopRef = useRef(0)
   const autoScrollLockedRef = useRef(false)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
   const lastMessage = messages[messages.length - 1]
   const lastMessageId = lastMessage?.id
   const lastMessageIsUser = lastMessage?.isUser === true
@@ -54,6 +55,40 @@ export function ChatArea({
     const byName = SUPPORTED_LANGUAGES.find((l) => l.name === value)
     if (byName) return byName.code
     return "en-US"
+  }
+
+  const getPrimaryPlayId = (message: Message) => {
+    if (message.isUser && message.audioUrl) return `${message.id}-original`
+    return `${message.id}-translated`
+  }
+
+  const playAudioUrl = (targetId: string, url: string) => {
+    stop()
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.currentTime = 0
+    }
+    const audio = new Audio(url)
+    audioRef.current = audio
+    setPlayingMessageId(targetId)
+    audio.onended = () => {
+      if (audioRef.current === audio) {
+        audioRef.current = null
+        setPlayingMessageId(null)
+      }
+    }
+    audio.onerror = () => {
+      if (audioRef.current === audio) {
+        audioRef.current = null
+        setPlayingMessageId(null)
+      }
+    }
+    audio.play().catch(() => {
+      if (audioRef.current === audio) {
+        audioRef.current = null
+        setPlayingMessageId(null)
+      }
+    })
   }
 
   useEffect(() => {
@@ -104,23 +139,62 @@ export function ChatArea({
       const lastMessage = messages[messages.length - 1]
       if (lastMessage.id !== lastMessageIdRef.current) {
         lastMessageIdRef.current = lastMessage.id
-        const languageCode = getSpeechLanguageCode(lastMessage.targetLanguage)
-        speak(lastMessage.translatedText, languageCode)
-        setPlayingMessageId(`${lastMessage.id}-translated`)
+        if (audioRef.current) {
+          audioRef.current.pause()
+          audioRef.current.currentTime = 0
+          audioRef.current = null
+        }
+        if (lastMessage.isUser && lastMessage.audioUrl) {
+          playAudioUrl(`${lastMessage.id}-original`, lastMessage.audioUrl)
+        } else {
+          const languageCode = getSpeechLanguageCode(lastMessage.targetLanguage)
+          speak(lastMessage.translatedText, languageCode)
+          setPlayingMessageId(`${lastMessage.id}-translated`)
+        }
       }
     }
   }, [messages, autoPlay, speak])
 
   const handlePlayTranslated = (message: Message) => {
-    if (playingMessageId === `${message.id}-translated` && isSpeaking) {
+    const targetId = getPrimaryPlayId(message)
+    if (message.isUser && message.audioUrl) {
+      if (playingMessageId === targetId && audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current.currentTime = 0
+        audioRef.current = null
+        setPlayingMessageId(null)
+        return
+      }
+      playAudioUrl(targetId, message.audioUrl)
+      return
+    }
+    if (playingMessageId === targetId && isSpeaking) {
       stop()
       setPlayingMessageId(null)
     } else {
       stop()
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current.currentTime = 0
+        audioRef.current = null
+      }
       const languageCode = getSpeechLanguageCode(message.targetLanguage)
       speak(message.translatedText, languageCode)
-      setPlayingMessageId(`${message.id}-translated`)
+      setPlayingMessageId(targetId)
     }
+  }
+
+  const handlePlayOriginal = (message: Message) => {
+    if (!message.audioUrl) return
+    const targetId = `${message.id}-original`
+    if (playingMessageId === targetId && audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.currentTime = 0
+      audioRef.current = null
+      setPlayingMessageId(null)
+      return
+    }
+    playAudioUrl(targetId, message.audioUrl)
   }
 
   const formatTime = (date: Date) => {
@@ -196,7 +270,7 @@ export function ChatArea({
                   className="h-6 w-6 -mt-1 hover:bg-background/20"
                   onClick={() => handlePlayTranslated(message)}
                 >
-                  {playingMessageId === `${message.id}-translated` && isSpeaking ? (
+                  {playingMessageId === getPrimaryPlayId(message) && (message.isUser ? Boolean(audioRef.current) : isSpeaking) ? (
                     <VolumeX className="w-4 h-4" />
                   ) : (
                     <Volume2 className="w-4 h-4" />
@@ -204,6 +278,28 @@ export function ChatArea({
                 </Button>
               </div>
               <p className="text-base leading-relaxed">{message.translatedText}</p>
+              {!message.isUser && (
+                <div className="mt-3 rounded-lg border border-border/40 bg-background/40 px-3 py-2">
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <p className="text-xs font-medium opacity-80">{getLanguageLabel(message.originalLanguage)}</p>
+                    {message.audioUrl ? (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 -mt-1 hover:bg-background/20"
+                        onClick={() => handlePlayOriginal(message)}
+                      >
+                        {playingMessageId === `${message.id}-original` ? (
+                          <VolumeX className="w-4 h-4" />
+                        ) : (
+                          <Volume2 className="w-4 h-4" />
+                        )}
+                      </Button>
+                    ) : null}
+                  </div>
+                  <p className="text-sm leading-relaxed opacity-90">{message.originalText}</p>
+                </div>
+              )}
               <div className="mt-2 text-xs opacity-60 text-right">{formatTime(message.timestamp)}</div>
             </div>
 

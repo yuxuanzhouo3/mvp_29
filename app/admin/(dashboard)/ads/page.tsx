@@ -28,10 +28,9 @@ type AdRow = {
 } & Record<string, unknown>
 
 export default async function AdsPage() {
-  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
-    .trim()
-    .toLowerCase()
-  const isTencent = target === "tencent"
+  const publicTarget = String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const privateTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const isTencent = publicTarget === "tencent" || privateTarget === "tencent"
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 

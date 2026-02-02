@@ -8,7 +8,7 @@ import { LanguageSelector } from "@/components/language-selector"
 import { RoomJoin } from "@/components/room-join"
 import { UserList, type User } from "@/components/user-list"
 import { AdSlot } from "@/components/ad-slot"
-import { transcribeAudio, translateText } from "@/lib/audio-utils"
+import { detectLanguageFromText, transcribeAudio, translateText } from "@/lib/audio-utils"
 import { useToast } from "@/hooks/use-toast"
 import type { AppSettings } from "@/components/settings-dialog"
 import { Button } from "@/components/ui/button"
@@ -178,7 +178,7 @@ export function VoiceChatInterface() {
     const recognition = new SpeechRecognition()
     recognition.continuous = true
     recognition.interimResults = true
-    recognition.lang = userLanguage.code
+    recognition.lang = uiLocaleToLanguageCode()
 
     recognition.onresult = (event) => {
       try {
@@ -223,12 +223,12 @@ export function VoiceChatInterface() {
       } catch { }
       if (speechRecognitionRef.current === recognition) speechRecognitionRef.current = null
     }
-  }, [isInRoom, isRecording, userLanguage.code])
+  }, [isInRoom, isRecording, uiLocaleToLanguageCode])
 
   useEffect(() => {
     if (!isInRoom) return
-    const sourceCode = userLanguage.code
-    const targetCode = uiLocaleToLanguageCode()
+    const sourceCode = detectLanguageFromText(liveTranscript)
+    const targetCode = userLanguage.code
     const sourcePrimary = primaryOf(sourceCode)
     const targetPrimary = primaryOf(targetCode)
 
@@ -327,7 +327,7 @@ export function VoiceChatInterface() {
 
   useEffect(() => {
     if (!isInRoom || !roomId || !roomUserId) return
-    const source = userLanguage.name
+    const source = "自动识别"
     const target = userLanguage.name
     const last = lastRoomLanguageUpdateRef.current
     if (last && last.roomId === roomId && last.userId === roomUserId && last.source === source && last.target === target) return
@@ -484,12 +484,28 @@ export function VoiceChatInterface() {
             ? ({ adminUserId: data.settings.adminUserId, joinMode: data.settings.joinMode === "password" ? "password" : "public" } as const)
             : null
         if (nextSettings) setRoomSettings(nextSettings)
-        setUsers(room.users)
         if (!leaveInitiatedRef.current && !room.users.some((u) => u.id === roomUserId)) {
           shouldSchedule = false
           exitRoom(t("toast.kickedTitle"), t("toast.kickedDesc"))
           return
         }
+
+        const latestLanguageByUser = new Map<string, { label: string; timestamp: number }>()
+        for (const msg of room.messages) {
+          const ts = Date.parse(msg.timestamp)
+          const sourceCode = resolveLanguageCode(msg.originalLanguage)
+          const label = SUPPORTED_LANGUAGES.find((lang) => lang.code === sourceCode)?.name ?? msg.originalLanguage
+          const existing = latestLanguageByUser.get(msg.userId)
+          if (!existing || (Number.isFinite(ts) && ts > existing.timestamp)) {
+            latestLanguageByUser.set(msg.userId, { label, timestamp: Number.isFinite(ts) ? ts : 0 })
+          }
+        }
+        const nextUsers = room.users.map((user) => {
+          const latest = latestLanguageByUser.get(user.id)
+          if (!latest) return user
+          return { ...user, sourceLanguage: latest.label }
+        })
+        setUsers(nextUsers)
 
         const avatarById = new Map(room.users.map((u) => [u.id, u.avatar]))
         const newMessages = await Promise.all(
@@ -571,7 +587,7 @@ export function VoiceChatInterface() {
           roomId: newRoomId,
           userId: participantId,
           userName: newUserName,
-          sourceLanguage: userLanguage.name,
+          sourceLanguage: "自动识别",
           targetLanguage: userLanguage.name,
           avatarUrl: profile?.avatar_url ?? undefined,
           joinPassword: options?.joinPassword,
@@ -760,23 +776,55 @@ export function VoiceChatInterface() {
       description: t("toast.chatClearedDesc"),
     })
   }, [t, toast])
+
+  const handleProfileSaved = useCallback(
+    ({ displayName, avatarUrl }: { displayName: string; avatarUrl: string }) => {
+      if (!roomUserId) return
+      setUserName(displayName)
+      setUsers((prev) =>
+        prev.map((item) =>
+          item.id === roomUserId
+            ? { ...item, name: displayName, avatar: avatarUrl || item.avatar }
+            : item,
+        ),
+      )
+      setMessages((prev) =>
+        prev.map((msg) => (msg.userId === roomUserId ? { ...msg, userName: displayName, userAvatar: avatarUrl || msg.userAvatar } : msg)),
+      )
+    },
+    [roomUserId],
+  )
   const handleRecordingComplete = useCallback(
     async (audioBlob: Blob) => {
       console.log("[v0] Recording complete, blob size:", audioBlob.size)
       setIsProcessing(true)
 
       try {
-        const audioUrl = URL.createObjectURL(audioBlob)
+        const audioUrl = await new Promise<string | undefined>((resolve) => {
+          const reader = new FileReader()
+          reader.onloadend = () => {
+            if (typeof reader.result === "string") {
+              resolve(reader.result)
+              return
+            }
+            resolve(undefined)
+          }
+          reader.onerror = () => resolve(undefined)
+          reader.readAsDataURL(audioBlob)
+        })
 
-        const transcribedText = await transcribeAudio(audioBlob, userLanguage.code)
+        const transcribedText = await transcribeAudio(audioBlob, "auto")
         console.log("[v0] Transcribed text:", transcribedText)
+        const detectedLanguage = detectLanguageFromText(transcribedText)
+        const detectedLanguageName =
+          SUPPORTED_LANGUAGES.find((lang) => lang.code === detectedLanguage)?.name ?? detectedLanguage
 
         const message = {
           id: Date.now().toString(),
           userId: roomUserId,
           userName,
           originalText: transcribedText,
-          originalLanguage: userLanguage.code,
+          originalLanguage: detectedLanguage,
           timestamp: new Date().toISOString(),
           audioUrl,
         }
@@ -801,7 +849,7 @@ export function VoiceChatInterface() {
 
         toast({
           title: t("toast.sentTitle"),
-          description: t("toast.sentDesc", { language: userLanguage.name }),
+          description: t("toast.sentDesc", { language: detectedLanguageName }),
         })
       } catch (error) {
         console.error("[v0] Processing error:", error)
@@ -830,6 +878,8 @@ export function VoiceChatInterface() {
         messageCount={messages.length}
         onSettingsChange={setSettings}
         roomId={isInRoom ? roomId : undefined}
+        roomUserId={roomUserId}
+        onProfileSaved={handleProfileSaved}
         userCount={users.length}
         onShowUsers={() => setIsUsersSheetOpen(true)}
       />

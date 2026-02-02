@@ -15,10 +15,9 @@ type AdRow = {
 }
 
 function isTencentTarget(): boolean {
-  const target = String(process.env.DEPLOY_TARGET ?? process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
-    .trim()
-    .toLowerCase()
-  return target === "tencent"
+  const publicTarget = String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
+  const privateTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
+  return publicTarget === "tencent" || privateTarget === "tencent"
 }
 
 export async function GET(req: Request) {

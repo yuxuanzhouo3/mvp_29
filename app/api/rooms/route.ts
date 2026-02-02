@@ -726,6 +726,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true })
     }
 
+    if (action === "update_user") {
+      if (typeof roomId !== "string" || roomId.trim().length === 0) {
+        return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 })
+      }
+      if (typeof userId !== "string" || userId.trim().length === 0) {
+        return NextResponse.json({ success: false, error: "Invalid userId" }, { status: 400 })
+      }
+      if (typeof userName !== "string" || userName.trim().length === 0) {
+        return NextResponse.json({ success: false, error: "Invalid userName" }, { status: 400 })
+      }
+
+      if (settingsStore.kind !== "memory") {
+        const expired = await cleanupRoomIfExpired(settingsStore, roomId.trim())
+        if (expired) {
+          return NextResponse.json({ success: false, error: "Room expired" }, { status: 410 })
+        }
+      }
+
+      const rid = roomId.trim()
+      const uid = userId.trim()
+      const roomData = await store.getRoom(rid)
+      if (!roomData) {
+        return NextResponse.json({ success: false, error: "Room not found" }, { status: 404 })
+      }
+      const existingUser = roomData.users.find((u) => u.id === uid)
+      if (!existingUser) {
+        return NextResponse.json({ success: false, error: "User not found" }, { status: 404 })
+      }
+
+      const nextUser = {
+        ...existingUser,
+        name: userName.trim(),
+        avatar:
+          typeof avatarUrl === "string" && avatarUrl.trim().length > 0 ? avatarUrl.trim() : existingUser.avatar,
+      }
+
+      await store.joinRoom(rid, nextUser)
+      return NextResponse.json({ success: true })
+    }
+
     if (action === "message") {
       if (typeof roomId !== "string" || roomId.trim().length === 0) {
         return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 })
