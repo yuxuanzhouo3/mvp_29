@@ -302,6 +302,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isTencent, supabase, fetchProfile])
 
+  useEffect(() => {
+    if (!isTencent) return
+    if (!user) return
+    let cancelled = false
+    const run = async () => {
+      try {
+        const params = new URLSearchParams()
+        if (user.id) params.set("userId", user.id)
+        if (user.email) params.set("email", user.email)
+        const res = await fetch(`/api/user/profile?${params.toString()}`)
+        if (!res.ok) return
+        const data = (await res.json()) as { displayName?: string | null }
+        const nextDisplayName = typeof data?.displayName === "string" ? data.displayName.trim() : ""
+        if (!nextDisplayName) return
+        if (cancelled) return
+        setProfile((prev) => {
+          if (prev?.display_name === nextDisplayName) return prev
+          return {
+            id: user.id,
+            email: user.email ?? null,
+            display_name: nextDisplayName,
+            avatar_url: prev?.avatar_url ?? null,
+          }
+        })
+      } catch {
+        return
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [isTencent, user])
+
   return (
     <AuthContext.Provider value={{
       session,

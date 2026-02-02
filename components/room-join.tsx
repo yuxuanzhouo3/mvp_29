@@ -94,13 +94,21 @@ export function RoomJoin({ onJoin }: RoomJoinProps) {
         window.localStorage.setItem(userKey, nextName)
         window.localStorage.setItem(legacyKey, nextName)
       }
-      if (user && nextName !== (profile?.display_name ?? "")) {
+      if (user && isTencent) {
+        try {
+          const res = await fetch("/api/user/profile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId: user.id, email: user.email, displayName: nextName }),
+          })
+          if (!res.ok) throw new Error("Save profile failed")
+        } catch {
+          return nextName
+        }
+      }
+      if (user && !isTencent && nextName !== (profile?.display_name ?? "")) {
         void updateProfile({ display_name: nextName }).catch(() => {
-          // toast({
-          //   title: t("roomJoin.updateNameFailed"),
-          //   description: error instanceof Error ? error.message : t("roomJoin.retryLater"),
-          //   variant: "destructive",
-          // })
+          return
         })
       }
       return nextName

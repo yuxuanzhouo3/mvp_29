@@ -62,11 +62,19 @@ export function SettingsDialog({ onSettingsChange }: SettingsDialogProps) {
 
   const initialDisplayName = useMemo(() => {
     if (typeof window !== "undefined") {
+      const userKey =
+        (user?.id && `voicelink_display_name:${user.id}`) ||
+        (user?.email && `voicelink_display_name:${user.email}`) ||
+        null
+      if (userKey) {
+        const storedByUser = window.localStorage.getItem(userKey)
+        if (typeof storedByUser === "string" && storedByUser.trim()) return storedByUser.trim()
+      }
       const stored = window.localStorage.getItem("voicelink_display_name")
       if (typeof stored === "string" && stored.trim()) return stored.trim()
     }
     return profile?.display_name || user?.user_metadata?.full_name || user?.email || ""
-  }, [profile?.display_name, user?.email, user?.user_metadata])
+  }, [profile?.display_name, user?.email, user?.id, user?.user_metadata])
 
   const [displayName, setDisplayName] = useState("")
   const [avatarUrl, setAvatarUrl] = useState("")
@@ -117,11 +125,24 @@ export function SettingsDialog({ onSettingsChange }: SettingsDialogProps) {
       if (nextDisplayName !== (profile?.display_name ?? "")) patch.display_name = nextDisplayName
       if (nextAvatarUrl !== (profile?.avatar_url ?? "")) patch.avatar_url = nextAvatarUrl ? nextAvatarUrl : null
 
-      if (Object.keys(patch).length > 0) {
+      if (Object.keys(patch).length > 0 && !isTencent) {
         await updateProfile(patch)
+      }
+      if (isTencent) {
+        const res = await fetch("/api/user/profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user.id, email: user.email, displayName: nextDisplayName }),
+        })
+        if (!res.ok) throw new Error("Save profile failed")
       }
 
       if (typeof window !== "undefined") {
+        const userKey =
+          (user?.id && `voicelink_display_name:${user.id}`) ||
+          (user?.email && `voicelink_display_name:${user.email}`) ||
+          "voicelink_display_name"
+        window.localStorage.setItem(userKey, nextDisplayName)
         window.localStorage.setItem("voicelink_display_name", nextDisplayName)
       }
 
