@@ -82,6 +82,7 @@ export function UserList({ users, currentUserId, adminUserId = null, canKick = f
                 <Globe className="w-3 h-3 text-muted-foreground" />
                 <p className="text-xs text-muted-foreground">
                   {getDisplayLanguage(user.sourceLanguage)}
+                  {user.targetLanguage ? ` → ${getDisplayLanguage(user.targetLanguage)}` : ""}
                 </p>
               </div>
             </div>

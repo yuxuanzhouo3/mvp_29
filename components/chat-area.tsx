@@ -36,6 +36,7 @@ export function ChatArea({
   const lastScrollTopRef = useRef(0)
   const autoScrollLockedRef = useRef(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const lastTouchRef = useRef(0)
   const lastMessage = messages[messages.length - 1]
   const lastMessageId = lastMessage?.id
   const lastMessageIsUser = lastMessage?.isUser === true
@@ -263,12 +264,17 @@ export function ChatArea({
             )}
 
             <div
-              className={`max-w-[88%] md:max-w-[85%] lg:max-w-[82%] rounded-xl transition-all ${
-                isEmbedded ? "p-3" : "p-4"
-              } ${message.isUser ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"} ${
-                isMessagePlaying(message) ? "ring-2 ring-primary/50 animate-pulse" : ""
-              }`}
-              onClick={() => handlePlayTranslated(message)}
+              className={`max-w-[88%] md:max-w-[85%] lg:max-w-[82%] rounded-xl transition-all ${isEmbedded ? "p-3" : "p-4"
+                } ${message.isUser ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"} ${isMessagePlaying(message) ? "ring-2 ring-primary/50 animate-pulse" : ""
+                } cursor-pointer`}
+              onClick={() => {
+                if (Date.now() - lastTouchRef.current < 500) return
+                handlePlayTranslated(message)
+              }}
+              onTouchEnd={() => {
+                lastTouchRef.current = Date.now()
+                handlePlayTranslated(message)
+              }}
               role="button"
               tabIndex={0}
               onKeyDown={(event) => {
@@ -281,7 +287,9 @@ export function ChatArea({
               {!message.isUser && <p className="text-xs font-semibold mb-2 opacity-70">{message.userName}</p>}
 
               <div className="flex items-start justify-between gap-2 mb-2">
-                <p className="text-sm font-medium opacity-80">{getLanguageLabel(message.targetLanguage)}</p>
+                <p className="text-sm font-medium opacity-80">
+                  {getLanguageLabel(message.originalLanguage)} → {getLanguageLabel(message.targetLanguage)}
+                </p>
                 <Button
                   variant="ghost"
                   size="icon"
@@ -289,6 +297,10 @@ export function ChatArea({
                   onClick={(event) => {
                     event.stopPropagation()
                     handlePlayTranslated(message)
+                  }}
+                  onTouchEnd={(event) => {
+                    event.stopPropagation()
+                    lastTouchRef.current = Date.now()
                   }}
                 >
                   {isMessagePlaying(message) ? (
@@ -300,7 +312,28 @@ export function ChatArea({
               </div>
               <p className="text-base leading-relaxed">{message.translatedText}</p>
               {!message.isUser && (
-                <div className="mt-3 rounded-lg border border-border/40 bg-background/40 px-3 py-2">
+                <div
+                  className="mt-3 rounded-lg border border-border/40 bg-background/40 px-3 py-2 cursor-pointer"
+                  role={message.audioUrl ? "button" : undefined}
+                  tabIndex={message.audioUrl ? 0 : -1}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    if (Date.now() - lastTouchRef.current < 500) return
+                    handlePlayOriginal(message)
+                  }}
+                  onTouchEnd={(event) => {
+                    event.stopPropagation()
+                    lastTouchRef.current = Date.now()
+                    handlePlayOriginal(message)
+                  }}
+                  onKeyDown={(event) => {
+                    if (!message.audioUrl) return
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault()
+                      handlePlayOriginal(message)
+                    }
+                  }}
+                >
                   <div className="flex items-start justify-between gap-2 mb-1">
                     <p className="text-xs font-medium opacity-80">{getLanguageLabel(message.originalLanguage)}</p>
                     {message.audioUrl ? (
@@ -311,6 +344,10 @@ export function ChatArea({
                         onClick={(event) => {
                           event.stopPropagation()
                           handlePlayOriginal(message)
+                        }}
+                        onTouchEnd={(event) => {
+                          event.stopPropagation()
+                          lastTouchRef.current = Date.now()
                         }}
                       >
                         {playingMessageId === `${message.id}-original` ? (

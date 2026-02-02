@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useEffect, useRef } from "react"
+import { useState, useCallback, useEffect, useMemo, useRef } from "react"
 import { Header } from "@/components/header"
 import { ChatArea } from "@/components/chat-area"
 import { VoiceControls } from "@/components/voice-controls"
@@ -11,6 +11,7 @@ import { detectLanguageFromText, transcribeAudio, translateText } from "@/lib/au
 import { useToast } from "@/hooks/use-toast"
 import type { AppSettings } from "@/components/settings-dialog"
 import { Button } from "@/components/ui/button"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { LogOut, Copy, Check, Settings, Users } from "lucide-react"
 import { useAuth } from "@/components/auth-provider"
 import { useI18n } from "@/components/i18n-provider"
@@ -92,7 +93,8 @@ export function VoiceChatInterface() {
   const [copied, setCopied] = useState(false)
 
   const [messages, setMessages] = useState<Message[]>([])
-  const [userLanguage, setUserLanguage] = useState<Language>(SUPPORTED_LANGUAGES[0])
+  const [sourceLanguage, setSourceLanguage] = useState<Language>(SUPPORTED_LANGUAGES[0])
+  const [targetLanguage, setTargetLanguage] = useState<Language>(SUPPORTED_LANGUAGES[0])
   const [isRecording, setIsRecording] = useState(false)
   const [liveTranscript, setLiveTranscript] = useState("")
   const [liveTranslation, setLiveTranslation] = useState("")
@@ -119,7 +121,7 @@ export function VoiceChatInterface() {
   const [roomSettingsSaving, setRoomSettingsSaving] = useState(false)
   const [isUsersSheetOpen, setIsUsersSheetOpen] = useState(false)
   const languagePrefsInitKeyRef = useRef<string | null>(null)
-  const lastSavedLanguagePrefsRef = useRef<{ userKey: string; source: string } | null>(null)
+  const lastSavedLanguagePrefsRef = useRef<{ userKey: string; source: string; target: string } | null>(null)
   const lastRoomLanguageUpdateRef = useRef<{ roomId: string; userId: string; source: string; target: string } | null>(null)
   const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const liveTranslateAbortRef = useRef<AbortController | null>(null)
@@ -177,7 +179,7 @@ export function VoiceChatInterface() {
     const recognition = new SpeechRecognition()
     recognition.continuous = true
     recognition.interimResults = true
-    recognition.lang = uiLocaleToLanguageCode()
+    recognition.lang = sourceLanguage.code === "auto" ? uiLocaleToLanguageCode() : sourceLanguage.code
 
     recognition.onresult = (event) => {
       try {
@@ -222,12 +224,12 @@ export function VoiceChatInterface() {
       } catch { }
       if (speechRecognitionRef.current === recognition) speechRecognitionRef.current = null
     }
-  }, [isInRoom, isRecording, uiLocaleToLanguageCode])
+  }, [isInRoom, isRecording, sourceLanguage.code, uiLocaleToLanguageCode])
 
   useEffect(() => {
     if (!isInRoom) return
-    const sourceCode = detectLanguageFromText(liveTranscript)
-    const targetCode = userLanguage.code
+    const sourceCode = sourceLanguage.code === "auto" ? detectLanguageFromText(liveTranscript) : sourceLanguage.code
+    const targetCode = targetLanguage.code
     const sourcePrimary = primaryOf(sourceCode)
     const targetPrimary = primaryOf(targetCode)
 
@@ -271,7 +273,12 @@ export function VoiceChatInterface() {
         liveTranslateAbortRef.current = null
       }
     }
-  }, [isInRoom, liveTranscript, primaryOf, uiLocaleToLanguageCode, userLanguage.code])
+  }, [isInRoom, liveTranscript, primaryOf, sourceLanguage.code, targetLanguage.code])
+
+  const sourceLanguageOptions = useMemo<Language[]>(() => {
+    const autoLabel = locale === "zh" ? "自动识别" : "Auto Detect"
+    return [{ code: "auto", name: autoLabel, flag: "🌐" }, ...SUPPORTED_LANGUAGES]
+  }, [locale])
 
   useEffect(() => {
     const userKey = user?.id ?? "anon"
@@ -284,6 +291,11 @@ export function VoiceChatInterface() {
       (meta.source_language_code as unknown) ??
       (meta.sourceLanguage as unknown) ??
       (meta.source_language as unknown)
+    const rawTarget =
+      (meta.targetLanguageCode as unknown) ??
+      (meta.target_language_code as unknown) ??
+      (meta.targetLanguage as unknown) ??
+      (meta.target_language as unknown)
 
     const readLocal = (key: string) => {
       if (typeof window === "undefined") return null
@@ -297,44 +309,55 @@ export function VoiceChatInterface() {
       readLocal(`voicelink_source_language:${userKey}`) ??
       (userKey !== "anon" ? readLocal("voicelink_source_language") : null) ??
       readLocal("voicelink_source_language:anon")
+    const localTarget =
+      readLocal(`voicelink_target_language:${userKey}`) ??
+      (userKey !== "anon" ? readLocal("voicelink_target_language") : null) ??
+      readLocal("voicelink_target_language:anon")
 
     const resolvedSource =
       typeof rawSource === "string" ? resolveLanguageCode(rawSource) : localSource ? resolveLanguageCode(localSource) : null
+    const resolvedTarget =
+      typeof rawTarget === "string" ? resolveLanguageCode(rawTarget) : localTarget ? resolveLanguageCode(localTarget) : null
 
-    const nextSource = resolvedSource ? SUPPORTED_LANGUAGES.find((l) => l.code === resolvedSource) : null
-    if (nextSource) setUserLanguage(nextSource)
-  }, [resolveLanguageCode, user?.id, user?.user_metadata])
-
-  useEffect(() => {
-    const nextCode = uiLocaleToLanguageCode()
-    const nextLanguage = SUPPORTED_LANGUAGES.find((lang) => lang.code === nextCode)
-    if (!nextLanguage) return
-    setUserLanguage((prev) => (prev.code === nextLanguage.code ? prev : nextLanguage))
-  }, [uiLocaleToLanguageCode])
+    const nextSource = resolvedSource
+      ? sourceLanguageOptions.find((l) => l.code === resolvedSource) ?? sourceLanguageOptions[0]
+      : null
+    const nextTarget = resolvedTarget ? SUPPORTED_LANGUAGES.find((l) => l.code === resolvedTarget) : null
+    if (nextSource) setSourceLanguage(nextSource)
+    if (nextTarget) setTargetLanguage(nextTarget)
+    if (!nextSource && !nextTarget) {
+      const fallbackCode = uiLocaleToLanguageCode()
+      const fallbackLanguage = SUPPORTED_LANGUAGES.find((l) => l.code === fallbackCode) ?? SUPPORTED_LANGUAGES[0]
+      setSourceLanguage(fallbackLanguage)
+      setTargetLanguage(fallbackLanguage)
+    }
+  }, [resolveLanguageCode, sourceLanguageOptions, uiLocaleToLanguageCode, user?.id, user?.user_metadata])
 
   useEffect(() => {
     const userKey = user?.id ?? "anon"
 
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(`voicelink_source_language:${userKey}`, userLanguage.code)
+      window.localStorage.setItem(`voicelink_source_language:${userKey}`, sourceLanguage.code)
+      window.localStorage.setItem(`voicelink_target_language:${userKey}`, targetLanguage.code)
       if (userKey === "anon") {
-        window.localStorage.setItem("voicelink_source_language", userLanguage.code)
+        window.localStorage.setItem("voicelink_source_language", sourceLanguage.code)
+        window.localStorage.setItem("voicelink_target_language", targetLanguage.code)
       }
     }
 
     if (!user) return
     const last = lastSavedLanguagePrefsRef.current
-    if (last && last.userKey === userKey && last.source === userLanguage.code) return
-    lastSavedLanguagePrefsRef.current = { userKey, source: userLanguage.code }
-    void updateUserMetadata({ sourceLanguageCode: userLanguage.code }).catch((error) => {
+    if (last && last.userKey === userKey && last.source === sourceLanguage.code && last.target === targetLanguage.code) return
+    lastSavedLanguagePrefsRef.current = { userKey, source: sourceLanguage.code, target: targetLanguage.code }
+    void updateUserMetadata({ sourceLanguageCode: sourceLanguage.code, targetLanguageCode: targetLanguage.code }).catch((error) => {
       console.error("[v0] Save language prefs failed:", error)
     })
-  }, [updateUserMetadata, user, userLanguage.code])
+  }, [sourceLanguage.code, targetLanguage.code, updateUserMetadata, user])
 
   useEffect(() => {
     if (!isInRoom || !roomId || !roomUserId) return
-    const source = "auto"
-    const target = userLanguage.code
+    const source = sourceLanguage.code
+    const target = targetLanguage.code
     const last = lastRoomLanguageUpdateRef.current
     if (last && last.roomId === roomId && last.userId === roomUserId && last.source === source && last.target === target) return
     lastRoomLanguageUpdateRef.current = { roomId, userId: roomUserId, source, target }
@@ -357,7 +380,7 @@ export function VoiceChatInterface() {
     return () => {
       controller.abort()
     }
-  }, [isInRoom, roomId, roomUserId, userLanguage.name])
+  }, [isInRoom, roomId, roomUserId, sourceLanguage.code, targetLanguage.code])
 
   const ensureClientInstanceId = useCallback(() => {
     if (clientInstanceIdRef.current) return clientInstanceIdRef.current
@@ -496,28 +519,18 @@ export function VoiceChatInterface() {
           return
         }
 
-        const latestLanguageByUser = new Map<string, { label: string; timestamp: number }>()
-        for (const msg of room.messages) {
-          const ts = Date.parse(msg.timestamp)
-          const sourceCode = resolveLanguageCode(msg.originalLanguage)
-          const label = SUPPORTED_LANGUAGES.find((lang) => lang.code === sourceCode)?.name ?? msg.originalLanguage
-          const existing = latestLanguageByUser.get(msg.userId)
-          if (!existing || (Number.isFinite(ts) && ts > existing.timestamp)) {
-            latestLanguageByUser.set(msg.userId, { label, timestamp: Number.isFinite(ts) ? ts : 0 })
-          }
-        }
-        const nextUsers = room.users.map((user) => {
-          const latest = latestLanguageByUser.get(user.id)
-          if (!latest) return user
-          return { ...user, sourceLanguage: latest.label }
-        })
+        const nextUsers = room.users.map((user) =>
+          user.id === roomUserId
+            ? { ...user, sourceLanguage: sourceLanguage.code, targetLanguage: targetLanguage.code }
+            : user,
+        )
         setUsers(nextUsers)
 
         const avatarById = new Map(room.users.map((u) => [u.id, u.avatar]))
         const newMessages = await Promise.all(
           room.messages.map(async (msg) => {
             const sourceLanguageCode = resolveLanguageCode(msg.originalLanguage)
-            const targetLanguageCode = userLanguage.code
+            const targetLanguageCode = targetLanguage.code
             const cacheKey = `${msg.id}:${targetLanguageCode}`
             const cached = cache.get(cacheKey)
 
@@ -576,7 +589,7 @@ export function VoiceChatInterface() {
       clearPolling()
       cache.clear()
     }
-  }, [exitRoom, isInRoom, resolveLanguageCode, roomId, roomUserId, t, userLanguage.code])
+  }, [exitRoom, isInRoom, resolveLanguageCode, roomId, roomUserId, t, sourceLanguage.code, targetLanguage.code, uiLocaleToLanguageCode])
 
   const handleJoinRoom = async (
     newRoomId: string,
@@ -593,8 +606,8 @@ export function VoiceChatInterface() {
           roomId: newRoomId,
           userId: participantId,
           userName: newUserName,
-          sourceLanguage: "自动识别",
-          targetLanguage: userLanguage.code,
+          sourceLanguage: sourceLanguage.code,
+          targetLanguage: targetLanguage.code,
           avatarUrl: profile?.avatar_url ?? undefined,
           joinPassword: options?.joinPassword,
           createJoinMode: options?.createJoinMode,
@@ -628,7 +641,13 @@ export function VoiceChatInterface() {
         setRoomUserId(participantId)
         setJoinedAuthUserId(user?.id ?? null)
         setIsInRoom(true)
-        setUsers(data.room.users)
+        setUsers(
+          data.room.users.map((entry) =>
+            entry.id === participantId
+              ? { ...entry, sourceLanguage: sourceLanguage.code, targetLanguage: targetLanguage.code }
+              : entry,
+          ),
+        )
         const nextSettings =
           data.settings && typeof data.settings.adminUserId === "string"
             ? ({ adminUserId: data.settings.adminUserId, joinMode: data.settings.joinMode === "password" ? "password" : "public" } as const)
@@ -819,9 +838,11 @@ export function VoiceChatInterface() {
           reader.readAsDataURL(audioBlob)
         })
 
-        const transcribedText = await transcribeAudio(audioBlob, "auto")
+        const selectedLanguageCode = sourceLanguage.code
+        const transcribedText = await transcribeAudio(audioBlob, selectedLanguageCode)
         console.log("[v0] Transcribed text:", transcribedText)
-        const detectedLanguage = detectLanguageFromText(transcribedText)
+        const detectedLanguage =
+          selectedLanguageCode === "auto" ? detectLanguageFromText(transcribedText) : selectedLanguageCode
         const detectedLanguageName =
           SUPPORTED_LANGUAGES.find((lang) => lang.code === detectedLanguage)?.name ?? detectedLanguage
 
@@ -870,7 +891,7 @@ export function VoiceChatInterface() {
         setLiveTranslation("")
       }
     },
-    [exitRoom, roomId, roomUserId, t, toast, userLanguage.code, userLanguage.name, userName],
+    [exitRoom, roomId, roomUserId, sourceLanguage.code, t, toast, targetLanguage.code, userName],
   )
 
   if (!isInRoom) {
@@ -974,7 +995,69 @@ export function VoiceChatInterface() {
             </div>
 
             <div className="shrink-0 px-2 lg:px-3 py-2 border-b border-border hidden lg:block">
-              {/* LanguageSelector removed as requested */}
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="min-w-[200px] flex-1">
+                  <Label className="text-xs text-muted-foreground">{t("language.source")}</Label>
+                  <Select
+                    value={sourceLanguage.code}
+                    onValueChange={(code) => {
+                      const next = sourceLanguageOptions.find((item) => item.code === code)
+                      if (next) setSourceLanguage(next)
+                    }}
+                  >
+                    <SelectTrigger className="w-full h-9">
+                      <SelectValue>
+                        <span className="flex items-center gap-2 truncate">
+                          <span>{sourceLanguage.flag}</span>
+                          <span className="truncate">{sourceLanguage.name}</span>
+                        </span>
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sourceLanguageOptions.map((lang) => (
+                        <SelectItem key={lang.code} value={lang.code}>
+                          <span className="flex items-center gap-2">
+                            <span>{lang.flag}</span>
+                            <span>{lang.name}</span>
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="min-w-[200px] flex-1">
+                  <Label className="text-xs text-muted-foreground">{t("language.target")}</Label>
+                  <Select
+                    value={targetLanguage.code}
+                    onValueChange={(code) => {
+                      const next = SUPPORTED_LANGUAGES.find((item) => item.code === code)
+                      if (next) setTargetLanguage(next)
+                    }}
+                  >
+                    <SelectTrigger className="w-full h-9">
+                      <SelectValue>
+                        <span className="flex items-center gap-2 truncate">
+                          <span>{targetLanguage.flag}</span>
+                          <span className="truncate">{targetLanguage.name}</span>
+                        </span>
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SUPPORTED_LANGUAGES.map((lang) => (
+                        <SelectItem key={lang.code} value={lang.code}>
+                          <span className="flex items-center gap-2">
+                            <span>{lang.flag}</span>
+                            <span>{lang.name}</span>
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {t("language.hint", { source: sourceLanguage.name, target: targetLanguage.name })}
+                </div>
+              </div>
             </div>
 
             <ChatArea
@@ -987,7 +1070,69 @@ export function VoiceChatInterface() {
 
             <div className="shrink-0 px-2 lg:px-3 py-2 border-t border-border bg-background/50">
               <div className="mb-2 lg:hidden">
-                {/* LanguageSelector removed as requested */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="min-w-0">
+                    <Label className="text-xs text-muted-foreground">{t("language.source")}</Label>
+                    <Select
+                      value={sourceLanguage.code}
+                      onValueChange={(code) => {
+                        const next = sourceLanguageOptions.find((item) => item.code === code)
+                        if (next) setSourceLanguage(next)
+                      }}
+                    >
+                      <SelectTrigger className="w-full h-9">
+                        <SelectValue>
+                          <span className="flex items-center gap-2 truncate">
+                            <span>{sourceLanguage.flag}</span>
+                            <span className="truncate">{sourceLanguage.name}</span>
+                          </span>
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {sourceLanguageOptions.map((lang) => (
+                          <SelectItem key={lang.code} value={lang.code}>
+                            <span className="flex items-center gap-2">
+                              <span>{lang.flag}</span>
+                              <span>{lang.name}</span>
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="min-w-0">
+                    <Label className="text-xs text-muted-foreground">{t("language.target")}</Label>
+                    <Select
+                      value={targetLanguage.code}
+                      onValueChange={(code) => {
+                        const next = SUPPORTED_LANGUAGES.find((item) => item.code === code)
+                        if (next) setTargetLanguage(next)
+                      }}
+                    >
+                      <SelectTrigger className="w-full h-9">
+                        <SelectValue>
+                          <span className="flex items-center gap-2 truncate">
+                            <span>{targetLanguage.flag}</span>
+                            <span className="truncate">{targetLanguage.name}</span>
+                          </span>
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SUPPORTED_LANGUAGES.map((lang) => (
+                          <SelectItem key={lang.code} value={lang.code}>
+                            <span className="flex items-center gap-2">
+                              <span>{lang.flag}</span>
+                              <span>{lang.name}</span>
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  {t("language.hint", { source: sourceLanguage.name, target: targetLanguage.name })}
+                </div>
               </div>
               {(isRecording || isProcessing) && (liveTranscript.trim() || !liveSpeechSupported) ? (
                 <div className="mb-2 rounded-lg border bg-background/70 px-3 py-2">
