@@ -147,7 +147,12 @@ export async function POST(req: Request) {
     const mediaType = audioFile.type || "audio/webm"
     const audioFormat = resolveVoiceFormat(mediaType)
     const engineFromEnv = resolveEnvValue("ASR_ENGINE_MODEL", "TENCENT_ASR_ENGINE_MODEL")
-    const engine = engineFromEnv?.trim() || toTencentAsrEngine(language) || "16k_zh"
+    const normalizedLanguage = typeof language === "string" ? language.trim() : ""
+    const engineFromLanguage =
+      normalizedLanguage && normalizedLanguage.toLowerCase() !== "auto"
+        ? toTencentAsrEngine(normalizedLanguage)
+        : undefined
+    const engine = engineFromLanguage || engineFromEnv?.trim() || "16k_zh"
     const region = resolveEnvValue("ASR_REGION", "TENCENT_ASR_REGION") || "ap-shanghai"
     const projectId = Number(resolveEnvValue("ASR_PROJECT_ID", "TENCENT_ASR_PROJECT_ID") || 0)
     const subServiceType = Number(resolveEnvValue("ASR_SUB_SERVICE_TYPE", "TENCENT_ASR_SUB_SERVICE_TYPE") || 2)
