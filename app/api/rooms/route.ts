@@ -840,13 +840,17 @@ export async function POST(request: NextRequest) {
       const activeUsers: User[] = []
       for (const user of users) {
         let lastSeenMs = parseLastSeenAt(user.lastSeenAt)
+        if (user.id !== uid && !Number.isFinite(lastSeenMs)) {
+          updates.push(store.leaveRoom(rid, user.id))
+          continue
+        }
         let nextUser = user
-        if (!Number.isFinite(lastSeenMs)) {
+        if (user.id === uid && !Number.isFinite(lastSeenMs)) {
           nextUser = { ...user, lastSeenAt: nowIso }
           updates.push(store.joinRoom(rid, nextUser))
           lastSeenMs = nowMs
         }
-        if (nowMs - lastSeenMs > USER_PRESENCE_TTL_MS) {
+        if (Number.isFinite(lastSeenMs) && nowMs - lastSeenMs > USER_PRESENCE_TTL_MS) {
           updates.push(store.leaveRoom(rid, user.id))
           continue
         }
