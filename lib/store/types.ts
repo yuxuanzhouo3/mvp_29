@@ -4,6 +4,7 @@ export interface User {
   sourceLanguage: string
   targetLanguage: string
   avatar: string
+  lastSeenAt?: string
 }
 
 export interface Message {

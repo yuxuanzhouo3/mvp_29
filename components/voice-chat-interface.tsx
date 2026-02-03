@@ -434,6 +434,41 @@ export function VoiceChatInterface() {
 
   useEffect(() => {
     if (!isInRoom || !roomId || !roomUserId) return
+
+    const sendLeave = () => {
+      if (leaveInitiatedRef.current) return
+      leaveInitiatedRef.current = true
+      const payload = JSON.stringify({ action: "leave", roomId, userId: roomUserId })
+      if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+        const blob = new Blob([payload], { type: "application/json" })
+        navigator.sendBeacon("/api/rooms", blob)
+      } else {
+        void fetch("/api/rooms", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+          keepalive: true,
+        })
+      }
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "hidden") sendLeave()
+    }
+
+    window.addEventListener("pagehide", sendLeave)
+    window.addEventListener("beforeunload", sendLeave)
+    document.addEventListener("visibilitychange", handleVisibility)
+
+    return () => {
+      window.removeEventListener("pagehide", sendLeave)
+      window.removeEventListener("beforeunload", sendLeave)
+      document.removeEventListener("visibilitychange", handleVisibility)
+    }
+  }, [isInRoom, roomId, roomUserId])
+
+  useEffect(() => {
+    if (!isInRoom || !roomId || !roomUserId) return
     const cache = translationCacheRef.current
     let cancelled = false
 
@@ -474,7 +509,7 @@ export function VoiceChatInterface() {
         const response = await fetch("/api/rooms", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "poll", roomId }),
+          body: JSON.stringify({ action: "poll", roomId, userId: roomUserId }),
           cache: "no-store",
           signal: controller.signal,
         })

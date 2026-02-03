@@ -1,12 +1,13 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getRoomStore } from "@/lib/store"
-import type { Message } from "@/lib/store/types"
+import type { Message, User } from "@/lib/store/types"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { Prisma } from "@prisma/client"
 import { getMariaPool, getPrisma } from "@/lib/prisma"
 import crypto from "node:crypto"
 
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000
+const USER_PRESENCE_TTL_MS = 60 * 1000
 const SETTINGS_KEY = "rooms_auto_delete_after_24h"
 const ROOM_ACTIVITY_COLUMN = "last_activity_at"
 const ROOM_SETTINGS_PREFIX = "room:"
@@ -43,6 +44,12 @@ function getSupabaseClient(): SupabaseClient | null {
 
   if (!supabaseUrl || !supabaseKey) return null
   return createClient(supabaseUrl, supabaseKey)
+}
+
+function parseLastSeenAt(value: unknown): number {
+  if (typeof value !== "string") return Number.NaN
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : Number.NaN
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -567,12 +574,14 @@ export async function POST(request: NextRequest) {
             ? avatarUrl.trim()
             : `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(userId)}`
 
+        const nowIso = new Date().toISOString()
         const roomData = await store.joinRoom(rid, {
           id: uid,
           name: userName.trim(),
           sourceLanguage: sourceLanguage.trim(),
           targetLanguage: targetLanguage.trim(),
           avatar,
+          lastSeenAt: nowIso,
         })
 
         return NextResponse.json({
@@ -720,6 +729,7 @@ export async function POST(request: NextRequest) {
         ...existingUser,
         sourceLanguage: sourceLanguage.trim(),
         targetLanguage: targetLanguage.trim(),
+        lastSeenAt: new Date().toISOString(),
       }
 
       await store.joinRoom(rid, nextUser)
@@ -760,6 +770,7 @@ export async function POST(request: NextRequest) {
         name: userName.trim(),
         avatar:
           typeof avatarUrl === "string" && avatarUrl.trim().length > 0 ? avatarUrl.trim() : existingUser.avatar,
+        lastSeenAt: new Date().toISOString(),
       }
 
       await store.joinRoom(rid, nextUser)
@@ -804,15 +815,52 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      const roomData = await store.getRoom(roomId.trim())
+      const rid = roomId.trim()
+      const uid = typeof userId === "string" ? userId.trim() : ""
+      const nowIso = new Date().toISOString()
+      const nowMs = Date.now()
+
+      const roomData = await store.getRoom(rid)
       if (!roomData) {
         return NextResponse.json({ success: false, error: "Room not found" }, { status: 404 })
+      }
+
+      let users = roomData.users
+      const updates: Promise<unknown>[] = []
+
+      if (uid) {
+        const currentUser = users.find((u) => u.id === uid)
+        if (currentUser) {
+          const nextUser: User = { ...currentUser, lastSeenAt: nowIso }
+          updates.push(store.joinRoom(rid, nextUser))
+          users = users.map((u) => (u.id === uid ? nextUser : u))
+        }
+      }
+
+      const activeUsers: User[] = []
+      for (const user of users) {
+        let lastSeenMs = parseLastSeenAt(user.lastSeenAt)
+        let nextUser = user
+        if (!Number.isFinite(lastSeenMs)) {
+          nextUser = { ...user, lastSeenAt: nowIso }
+          updates.push(store.joinRoom(rid, nextUser))
+          lastSeenMs = nowMs
+        }
+        if (nowMs - lastSeenMs > USER_PRESENCE_TTL_MS) {
+          updates.push(store.leaveRoom(rid, user.id))
+          continue
+        }
+        activeUsers.push(nextUser)
+      }
+
+      if (updates.length > 0) {
+        await Promise.allSettled(updates)
       }
 
       const settings = await getRoomSettings(settingsStore, roomId.trim()).catch(() => null)
       return NextResponse.json({
         success: true,
-        room: roomData,
+        room: { ...roomData, users: activeUsers },
         settings: settings ? { adminUserId: settings.adminUserId, joinMode: settings.joinMode } : null,
       })
     }
