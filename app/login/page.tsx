@@ -26,7 +26,18 @@ export default function LoginPage() {
   const [verificationEmail, setVerificationEmail] = useState<string | null>(null)
   const verificationRequestLock = useRef(false)
   const verificationVerifyLock = useRef(false)
+  const wechatRedirectHandledRef = useRef(false)
   const tencentLogoutKey = "tencent:auth:logged_out"
+  const wechatAppId = (
+    process.env.NEXT_PUBLIC_WECHAT_APP_ID ||
+    process.env.NEXT_PUBLIC_TENCENT_WECHAT_APP_ID ||
+    ""
+  ).trim()
+  const wechatScope = (process.env.NEXT_PUBLIC_WECHAT_SCOPE || "snsapi_login").trim() || "snsapi_login"
+  const wechatProviderId = (
+    process.env.NEXT_PUBLIC_WECHAT_PROVIDER_ID ||
+    (wechatScope === "snsapi_login" ? "wx_open" : "wx_public")
+  ).trim() || (wechatScope === "snsapi_login" ? "wx_open" : "wx_public")
   const clearTencentLoggedOut = () => {
     if (!isTencent) return
     try {
@@ -41,6 +52,61 @@ export default function LoginPage() {
     if (typeof persistence.setPersistence === "function") {
       await persistence.setPersistence("local")
     }
+  }
+
+  type WechatOauthAuth = {
+    genProviderRedirectUri: (params: {
+      provider_id: string
+      redirect_uri: string
+      provider_redirect_uri?: string
+      state: string
+      scope?: string
+      response_type?: string
+    }) => Promise<{ uri?: string }>
+    grantProviderToken: (params: {
+      provider_id: string
+      provider_redirect_uri?: string
+      provider_code?: string
+    }) => Promise<{ provider_token?: string }>
+    signInWithProvider: (params: { provider_token: string }) => Promise<unknown>
+  }
+
+  const getWechatSupport = (auth: unknown) => {
+    const legacy = auth as {
+      weixinAuthProvider?: (options: { appid: string; scope?: string; state?: string }) => {
+        signInWithRedirect: () => Promise<void>
+        getRedirectResult: () => Promise<unknown>
+      }
+    }
+    if (typeof legacy.weixinAuthProvider === "function") {
+      if (!wechatAppId) {
+        throw new Error("未配置微信 AppID")
+      }
+      return {
+        mode: "legacy" as const,
+        provider: legacy.weixinAuthProvider({
+          appid: wechatAppId,
+          scope: wechatScope,
+          state: "login",
+        }),
+      }
+    }
+    const oauthAuth = auth as Partial<WechatOauthAuth>
+    if (
+      typeof oauthAuth.genProviderRedirectUri === "function" &&
+      typeof oauthAuth.grantProviderToken === "function" &&
+      typeof oauthAuth.signInWithProvider === "function"
+    ) {
+      return { mode: "oauth" as const, auth: oauthAuth as WechatOauthAuth }
+    }
+    throw new Error("当前 SDK 不支持微信登录")
+  }
+
+  const getWechatRedirectUri = () => {
+    const url = new URL(window.location.href)
+    url.searchParams.delete("code")
+    url.searchParams.delete("state")
+    return url.toString()
   }
 
   const buildTencentUsername = (value: string) => {
@@ -92,6 +158,61 @@ export default function LoginPage() {
     if (isLoading) return
     if (user) router.replace("/")
   }, [isLoading, router, user])
+
+  useEffect(() => {
+    if (!isTencent) return
+    if (typeof window === "undefined") return
+    const params = new URLSearchParams(window.location.search)
+    if (!params.get("code")) return
+    if (wechatRedirectHandledRef.current) return
+    wechatRedirectHandledRef.current = true
+    const run = async () => {
+      try {
+        const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
+        const auth = getCloudBaseAuth()
+        await ensureCloudbasePersistence(auth)
+        const code = params.get("code")
+        if (!code) return
+        const support = getWechatSupport(auth)
+        if (support.mode === "legacy") {
+          const result = await support.provider.getRedirectResult()
+          if (result) {
+            clearTencentLoggedOut()
+            router.replace("/")
+            return
+          }
+          return
+        }
+        const state = params.get("state") || ""
+        try {
+          const expected = window.sessionStorage.getItem("tencent:wechat:state") || ""
+          if (expected && state && expected !== state) {
+            throw new Error("登录状态校验失败")
+          }
+        } catch (e) {
+          throw e
+        }
+        const redirectUri = getWechatRedirectUri()
+        const tokenRes = await support.auth.grantProviderToken({
+          provider_id: wechatProviderId,
+          provider_redirect_uri: redirectUri,
+          provider_code: code,
+        })
+        const providerToken = tokenRes?.provider_token
+        if (!providerToken) {
+          throw new Error("未获取到微信授权凭证")
+        }
+        await support.auth.signInWithProvider({ provider_token: providerToken })
+        clearTencentLoggedOut()
+        router.replace("/")
+        return
+      } catch (e) {
+        const message = extractTencentAuthError(e)
+        toast({ title: "微信登录失败", description: message, variant: "destructive" })
+      }
+    }
+    void run()
+  }, [isTencent, router, toast])
 
   const formatAuthError = (e: unknown): { title: string; description: string; variant?: "destructive"; nextView?: "verify" } => {
     const message =
@@ -402,6 +523,44 @@ export default function LoginPage() {
     }
   }
 
+  const handleWechatLogin = async () => {
+    setIsSubmitting(true)
+    try {
+      const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
+      const auth = getCloudBaseAuth()
+      await ensureCloudbasePersistence(auth)
+      const support = getWechatSupport(auth)
+      clearTencentLoggedOut()
+      if (support.mode === "legacy") {
+        await support.provider.signInWithRedirect()
+        return
+      }
+      const redirectUri = getWechatRedirectUri()
+      const state = `login_${Math.random().toString(36).slice(2, 10)}`
+      try {
+        window.sessionStorage.setItem("tencent:wechat:state", state)
+      } catch {
+        return
+      }
+      const { uri } = await support.auth.genProviderRedirectUri({
+        provider_id: wechatProviderId,
+        redirect_uri: redirectUri,
+        provider_redirect_uri: redirectUri,
+        state,
+        scope: wechatScope,
+        response_type: "code",
+      })
+      if (!uri) {
+        throw new Error("无法获取微信授权链接")
+      }
+      window.location.assign(uri)
+    } catch (e) {
+      const message = extractTencentAuthError(e)
+      toast({ title: "微信登录失败", description: message, variant: "destructive" })
+      setIsSubmitting(false)
+    }
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
@@ -411,7 +570,7 @@ export default function LoginPage() {
             {view === "verify"
               ? "输入邮箱验证码完成注册并登录"
               : isTencent
-                ? "使用邮箱继续"
+                ? "使用邮箱或微信继续"
                 : "使用邮箱或 Google 账号继续"}
           </CardDescription>
         </CardHeader>
@@ -487,21 +646,38 @@ export default function LoginPage() {
             )}
           </div>
 
-          {view === "form" && !isTencent ? (
-            <>
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                  <span className="w-full border-t border-border" />
+          {view === "form" ? (
+            isTencent ? (
+              <>
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <span className="w-full border-t border-border" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-card px-2 text-muted-foreground">或</span>
+                  </div>
                 </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-card px-2 text-muted-foreground">或</span>
-                </div>
-              </div>
 
-              <Button variant="outline" className="w-full bg-transparent" onClick={handleGoogleLogin} disabled={isSubmitting}>
-                使用 Google 登录
-              </Button>
-            </>
+                <Button variant="outline" className="w-full bg-transparent" onClick={handleWechatLogin} disabled={isSubmitting}>
+                  使用微信登录
+                </Button>
+              </>
+            ) : (
+              <>
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <span className="w-full border-t border-border" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-card px-2 text-muted-foreground">或</span>
+                  </div>
+                </div>
+
+                <Button variant="outline" className="w-full bg-transparent" onClick={handleGoogleLogin} disabled={isSubmitting}>
+                  使用 Google 登录
+                </Button>
+              </>
+            )
           ) : null}
         </CardContent>
       </Card>

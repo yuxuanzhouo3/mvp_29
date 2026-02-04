@@ -26,6 +26,7 @@
             "DEPLOY_TARGET": "tencent",
             "NEXT_PUBLIC_DEPLOY_TARGET": "tencent",
             "NEXT_PUBLIC_TENCENT_ENV_ID": "mornspeaker-0gimakjfaa3a7697",
+            "NEXT_PUBLIC_WECHAT_APP_ID": "your-wechat-app-id",
             "TENCENT_ENV_ID": "mornspeaker-0gimakjfaa3a7697",
             "DATABASE_URL": "${TENCENT_DATABASE_URL}",
             "TENCENT_DASHSCOPE_API_KEY": "your-dashscope-api-key",

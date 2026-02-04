@@ -150,7 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (cancelled) return
             const rawEmail = currentUser ? (currentUser as { email?: string }).email ?? null : null
             const email = typeof rawEmail === 'string' ? rawEmail.trim() : null
-            if (!currentUser || !email) {
+            if (!currentUser) {
               const prev = tencentAuthSnapshotRef.current
               if (prev.uid === null && prev.email === null && prev.displayName === null) return
               tencentAuthSnapshotRef.current = { uid: null, email: null, displayName: null }
@@ -162,7 +162,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const displayName =
               (currentUser as { nickName?: string }).nickName ??
               (currentUser as { username?: string }).username ??
-              (email ? email.split("@")[0] : 'Guest User')
+              (email ? email.split("@")[0] : currentUser.uid || 'Guest User')
             const prev = tencentAuthSnapshotRef.current
             if (prev.uid === currentUser.uid && prev.email === email && prev.displayName === displayName) return
             tencentAuthSnapshotRef.current = { uid: currentUser.uid, email, displayName }

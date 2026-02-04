@@ -106,7 +106,7 @@ export async function resampleTo16k(audioData: Float32Array, originalSampleRate:
   const offlineCtx = new OfflineAudioContext(1, Math.ceil(duration * targetSampleRate), targetSampleRate)
 
   const buffer = offlineCtx.createBuffer(1, audioData.length, originalSampleRate)
-  buffer.copyToChannel(audioData, 0)
+  buffer.getChannelData(0).set(audioData)
 
   const source = offlineCtx.createBufferSource()
   source.buffer = buffer
