@@ -1,4 +1,4 @@
-import { getMariaPool } from "@/lib/prisma"
+import { getMariaPool, getPrisma } from "@/lib/prisma"
 import { RoomStore, RoomData, User, Message } from "./types"
 import crypto from "node:crypto"
 
@@ -7,6 +7,43 @@ const globalForMysql = globalThis as unknown as {
 }
 
 const OPENID_CACHE_TTL_MS = 10 * 60_000
+
+function parseJsonValue<T>(raw: unknown): T | null {
+  if (!raw) return null
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as T
+    } catch {
+      return null
+    }
+  }
+  if (Buffer.isBuffer(raw)) {
+    try {
+      return JSON.parse(raw.toString("utf8")) as T
+    } catch {
+      return null
+    }
+  }
+  if (raw instanceof Uint8Array) {
+    try {
+      return JSON.parse(Buffer.from(raw).toString("utf8")) as T
+    } catch {
+      return null
+    }
+  }
+  if (typeof raw === "object") {
+    const maybeBuffer = raw as { type?: string; data?: number[] }
+    if (maybeBuffer.type === "Buffer" && Array.isArray(maybeBuffer.data)) {
+      try {
+        return JSON.parse(Buffer.from(maybeBuffer.data).toString("utf8")) as T
+      } catch {
+        return null
+      }
+    }
+    return raw as T
+  }
+  return null
+}
 
 export class MysqlRoomStore implements RoomStore {
   private async ensureOpenidColumn(pool: any, tableName: string): Promise<void> {
@@ -76,53 +113,91 @@ export class MysqlRoomStore implements RoomStore {
   }
 
   async getRoom(roomId: string): Promise<RoomData | null> {
-    const pool = await getMariaPool()
-    const roomRows = await pool.query("SELECT id, created_at FROM `rooms` WHERE id = ? LIMIT 1", [roomId])
-    const room = Array.isArray(roomRows) && roomRows.length > 0 ? roomRows[0] : null
-    if (!room) return null
-
-    const userRows = await pool.query("SELECT data FROM `room_users` WHERE room_id = ?", [roomId])
-    const messageRows = await pool.query("SELECT data FROM `room_messages` WHERE room_id = ? ORDER BY created_at ASC", [
-      roomId,
-    ])
-
-    const users = (Array.isArray(userRows) ? userRows : [])
-      .map((row) => {
-        const raw = row?.data
-        if (!raw) return null
-        try {
-          return typeof raw === "string" ? (JSON.parse(raw) as User) : (raw as User)
-        } catch {
-          return null
-        }
+    try {
+      const prisma = await getPrisma()
+      const room = await prisma.room.findUnique({
+        where: { id: roomId },
+        include: {
+          users: true,
+          messages: { orderBy: { createdAt: "asc" } },
+        },
       })
-      .filter((u): u is User => Boolean(u))
+      if (!room) return null
+      const users = room.users
+        .map((row) => {
+          const parsed = parseJsonValue<User>(row.data)
+          if (parsed && typeof parsed.id === "string" && parsed.id.trim()) return parsed
+          const fallbackId = typeof row.userId === "string" ? row.userId.trim() : ""
+          if (!fallbackId) return null
+          return {
+            id: fallbackId,
+            name: fallbackId,
+            sourceLanguage: "",
+            targetLanguage: "",
+            avatar: "",
+          }
+        })
+        .filter((u): u is User => Boolean(u))
+      const messages = room.messages
+        .map((row) => parseJsonValue<Message>(row.data))
+        .filter((m): m is Message => Boolean(m))
+      return {
+        id: roomId,
+        users,
+        messages,
+        createdAt: room.createdAt.toISOString(),
+      }
+    } catch {
+      const pool = await getMariaPool()
+      const roomRows = await pool.query("SELECT id, created_at FROM `rooms` WHERE id = ? LIMIT 1", [roomId])
+      const room = Array.isArray(roomRows) && roomRows.length > 0 ? roomRows[0] : null
+      if (!room) return null
 
-    const messages = (Array.isArray(messageRows) ? messageRows : [])
-      .map((row) => {
-        const raw = row?.data
-        if (!raw) return null
-        try {
-          return typeof raw === "string" ? (JSON.parse(raw) as Message) : (raw as Message)
-        } catch {
-          return null
-        }
-      })
-      .filter((m): m is Message => Boolean(m))
+      const userRows = await pool.query(
+        "SELECT user_id AS userId, CAST(data AS CHAR) AS data FROM `room_users` WHERE room_id = ?",
+        [roomId],
+      )
+      const messageRows = await pool.query(
+        "SELECT CAST(data AS CHAR) AS data FROM `room_messages` WHERE room_id = ? ORDER BY created_at ASC",
+        [roomId],
+      )
 
-    const createdAtRaw = room?.created_at ?? room?.createdAt ?? null
-    const createdAt =
-      createdAtRaw instanceof Date
-        ? createdAtRaw.toISOString()
-        : typeof createdAtRaw === "string"
-          ? new Date(createdAtRaw).toISOString()
-          : new Date().toISOString()
+      const users = (Array.isArray(userRows) ? userRows : [])
+        .map((row) => {
+          const parsed = parseJsonValue<User>(row?.data)
+          if (parsed && typeof parsed.id === "string" && parsed.id.trim()) return parsed
+          const fallbackId = typeof row?.userId === "string" ? row.userId.trim() : ""
+          if (!fallbackId) return null
+          return {
+            id: fallbackId,
+            name: fallbackId,
+            sourceLanguage: "",
+            targetLanguage: "",
+            avatar: "",
+          }
+        })
+        .filter((u): u is User => Boolean(u))
 
-    return {
-      id: roomId,
-      users,
-      messages,
-      createdAt,
+      const messages = (Array.isArray(messageRows) ? messageRows : [])
+        .map((row) => {
+          return parseJsonValue<Message>(row?.data)
+        })
+        .filter((m): m is Message => Boolean(m))
+
+      const createdAtRaw = room?.created_at ?? room?.createdAt ?? null
+      const createdAt =
+        createdAtRaw instanceof Date
+          ? createdAtRaw.toISOString()
+          : typeof createdAtRaw === "string"
+            ? new Date(createdAtRaw).toISOString()
+            : new Date().toISOString()
+
+      return {
+        id: roomId,
+        users,
+        messages,
+        createdAt,
+      }
     }
   }
 }

@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo } from "react"
-import { Users, Globe, UserX } from "lucide-react"
+import { Users, Globe, UserX, Phone } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -33,11 +33,12 @@ type UserListProps = {
   adminUserId?: string | null
   canKick?: boolean
   onKick?: (targetUserId: string) => void | Promise<void>
+  onCall?: (targetUserId: string) => void | Promise<void>
 }
 
-export function UserList({ users, currentUserId, adminUserId = null, canKick = false, onKick }: UserListProps) {
+export function UserList({ users, currentUserId, adminUserId = null, canKick = false, onKick, onCall }: UserListProps) {
   const { t, locale } = useI18n()
-  
+
   const displayNames = useMemo(() => {
     try {
       return new Intl.DisplayNames([locale === 'zh' ? 'zh-CN' : locale === 'en' ? 'en-US' : locale], { type: 'language' })
@@ -96,6 +97,17 @@ export function UserList({ users, currentUserId, adminUserId = null, canKick = f
                   {t("users.online")}
                 </Badge>
               )}
+              {onCall && user.id !== currentUserId ? (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label={t("users.call")}
+                  onClick={() => void onCall(user.id)}
+                >
+                  <Phone className="w-4 h-4" />
+                </Button>
+              ) : null}
               {canKick && onKick && user.id !== currentUserId && (!adminUserId || user.id !== adminUserId) ? (
                 <AlertDialog>
                   <AlertDialogTrigger asChild>

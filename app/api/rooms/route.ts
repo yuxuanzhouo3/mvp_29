@@ -8,6 +8,7 @@ import crypto from "node:crypto"
 
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000
 const USER_PRESENCE_TTL_MS = 60 * 1000
+const SIGNAL_TTL_MS = 60 * 1000
 const SETTINGS_KEY = "rooms_auto_delete_after_24h"
 const ROOM_ACTIVITY_COLUMN = "last_activity_at"
 const ROOM_SETTINGS_PREFIX = "room:"
@@ -25,6 +26,31 @@ const globalForRoomSettings = globalThis as unknown as {
   __voicelinkRoomCleanupCache?: CleanupCache
   __voicelinkRoomJoinSettings?: Map<string, unknown>
   __voicelinkAppSettingsOpenid?: { value: boolean; fetchedAt: number }
+  __voicelinkRoomSignals?: Map<string, Array<{ to: string; from: string; payload: unknown; createdAt: number }>>
+}
+
+if (!globalForRoomSettings.__voicelinkRoomSignals) {
+  globalForRoomSettings.__voicelinkRoomSignals = new Map()
+}
+
+function enqueueSignal(roomId: string, to: string, from: string, payload: unknown) {
+  const map = globalForRoomSettings.__voicelinkRoomSignals!
+  const list = map.get(roomId) ?? []
+  const now = Date.now()
+  const fresh = list.filter((s) => now - s.createdAt < SIGNAL_TTL_MS)
+  fresh.push({ to, from, payload, createdAt: now })
+  map.set(roomId, fresh)
+}
+
+function collectSignals(roomId: string, userId: string): unknown[] {
+  const map = globalForRoomSettings.__voicelinkRoomSignals!
+  const list = map.get(roomId) ?? []
+  const now = Date.now()
+  const fresh = list.filter((s) => now - s.createdAt < SIGNAL_TTL_MS)
+  const mine = fresh.filter((s) => s.to === userId).map((s) => ({ from: s.from, payload: s.payload }))
+  const remaining = fresh.filter((s) => s.to !== userId)
+  map.set(roomId, remaining)
+  return mine
 }
 
 function isTencentTarget(): boolean {
@@ -803,6 +829,31 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, message: savedMessage })
     }
 
+    if (action === "signal") {
+      if (typeof roomId !== "string" || roomId.trim().length === 0) {
+        return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 })
+      }
+      if (typeof userId !== "string" || userId.trim().length === 0) {
+        return NextResponse.json({ success: false, error: "Invalid userId" }, { status: 400 })
+      }
+      const toUserId = typeof body.toUserId === "string" ? body.toUserId.trim() : ""
+      if (!toUserId) {
+        return NextResponse.json({ success: false, error: "Invalid toUserId" }, { status: 400 })
+      }
+      const payload = body.payload
+      if (typeof payload !== "object" || payload === null) {
+        return NextResponse.json({ success: false, error: "Invalid payload" }, { status: 400 })
+      }
+
+      const room = await store.getRoom(roomId.trim())
+      if (!room) {
+        return NextResponse.json({ success: false, error: "Room not found" }, { status: 404 })
+      }
+
+      enqueueSignal(roomId.trim(), toUserId, userId.trim(), payload)
+      return NextResponse.json({ success: true })
+    }
+
     if (action === "poll") {
       if (typeof roomId !== "string" || roomId.trim().length === 0) {
         return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 })
@@ -840,12 +891,8 @@ export async function POST(request: NextRequest) {
       const activeUsers: User[] = []
       for (const user of users) {
         let lastSeenMs = parseLastSeenAt(user.lastSeenAt)
-        if (user.id !== uid && !Number.isFinite(lastSeenMs)) {
-          updates.push(store.leaveRoom(rid, user.id))
-          continue
-        }
         let nextUser = user
-        if (user.id === uid && !Number.isFinite(lastSeenMs)) {
+        if (!Number.isFinite(lastSeenMs)) {
           nextUser = { ...user, lastSeenAt: nowIso }
           updates.push(store.joinRoom(rid, nextUser))
           lastSeenMs = nowMs
@@ -862,9 +909,11 @@ export async function POST(request: NextRequest) {
       }
 
       const settings = await getRoomSettings(settingsStore, roomId.trim()).catch(() => null)
+      const signals = uid ? collectSignals(rid, uid) : []
       return NextResponse.json({
         success: true,
         room: { ...roomData, users: activeUsers },
+        signals,
         settings: settings ? { adminUserId: settings.adminUserId, joinMode: settings.joinMode } : null,
       })
     }

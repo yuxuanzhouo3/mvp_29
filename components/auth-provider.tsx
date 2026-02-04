@@ -213,19 +213,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 }
               }
               try {
-                const loginState = await runWithTimeout(auth.getLoginState(), 3000)
                 let currentUser: { uid: string } | null = null
-                if (loginState && typeof loginState === "object" && "user" in loginState) {
-                  currentUser = (loginState as { user?: { uid: string } | null }).user ?? null
+                try {
+                  const loginState = await runWithTimeout(auth.getLoginState(), 3000)
+                  if (loginState && typeof loginState === "object" && "user" in loginState) {
+                    currentUser = (loginState as { user?: { uid: string } | null }).user ?? null
+                  }
+                } catch (err) {
+                  console.error("CloudBase auth state refresh failed:", err)
                 }
                 const isLoggedOut = getTencentLoggedOut()
                 if (isLoggedOut) {
                   currentUser = null
                 }
+                if (!currentUser && !isLoggedOut) {
+                  try {
+                    const meRes = await fetch("/api/auth/me")
+                    if (meRes.ok) {
+                      const meData = await meRes.json()
+                      if (meData.success && meData.user) {
+                        currentUser = {
+                          uid: meData.user.id,
+                          email: meData.user.email,
+                          nickName: meData.user.name || meData.user.email?.split("@")[0] || "Local User"
+                        } as any
+                      }
+                    }
+                  } catch (e) {
+                    console.warn("[AuthProvider] Local auth check failed:", e)
+                  }
+                }
                 applyCurrentUser(currentUser)
-              } catch (err) {
-                console.error("CloudBase auth state refresh failed:", err)
-                applyCurrentUser(null)
               } finally {
                 refreshInFlightRef.current = null
               }

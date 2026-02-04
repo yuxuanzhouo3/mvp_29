@@ -275,26 +275,61 @@ export default function LoginPage() {
           toast({ title: "邮箱不能为空", description: "请输入邮箱后重试。", variant: "destructive" })
           return
         }
+
+        // 尝试本地登录逻辑 (用于本地环境或 CloudBase 登录失败时)
+        const tryLocalLogin = async () => {
+          const res = await fetch("/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: trimmedEmail, password })
+          })
+          const data = await res.json()
+          if (data.success) {
+            clearTencentLoggedOut()
+            window.location.assign("/")
+            return true
+          }
+          return false
+        }
+
+        // 如果是本地环境，优先尝试本地 API 登录以获得更好的开发体验
+        const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+        if (isLocal) {
+          const success = await tryLocalLogin()
+          if (success) return
+        }
+
         if (typeof auth.signOut === "function") {
           try {
             await auth.signOut()
           } catch { }
         }
-        if (typeof auth.signInWithPassword === "function") {
-          const result = await auth.signInWithPassword({ email: trimmedEmail, password })
-          if (result?.error) throw result.error
-          clearTencentLoggedOut()
-          await syncTencentUser(trimmedEmail, password)
-          router.replace("/")
-          return
+
+        try {
+          if (typeof auth.signInWithPassword === "function") {
+            const result = await auth.signInWithPassword({ email: trimmedEmail, password })
+            if (result?.error) throw result.error
+            clearTencentLoggedOut()
+            await syncTencentUser(trimmedEmail, password)
+            router.replace("/")
+            return
+          }
+          if (typeof auth.signInWithEmailAndPassword === "function") {
+            await auth.signInWithEmailAndPassword(trimmedEmail, password)
+            clearTencentLoggedOut()
+            await syncTencentUser(trimmedEmail, password)
+            router.replace("/")
+            return
+          }
+        } catch (cloudbaseErr) {
+          // 如果 CloudBase 登录失败且之前没尝试过本地登录，则尝试本地登录
+          if (!isLocal) {
+            const success = await tryLocalLogin()
+            if (success) return
+          }
+          throw cloudbaseErr
         }
-        if (typeof auth.signInWithEmailAndPassword === "function") {
-          await auth.signInWithEmailAndPassword(trimmedEmail, password)
-          clearTencentLoggedOut()
-          await syncTencentUser(trimmedEmail, password)
-          router.replace("/")
-          return
-        }
+
         toast({ title: "当前 SDK 不支持邮箱密码登录", description: "请升级云开发 JS SDK 后重试。", variant: "destructive" })
         return
       }
@@ -321,6 +356,24 @@ export default function LoginPage() {
     try {
       if (isTencent) {
         const trimmedEmail = email.trim()
+        const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+
+        // 本地环境直接调用注册接口，跳过验证码
+        if (isLocal) {
+          const res = await fetch("/api/auth/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: trimmedEmail, password })
+          })
+          const data = await res.json()
+          if (data.success) {
+            toast({ title: "注册成功", description: "账号已在本地环境创建，请直接登录。" })
+            return
+          } else {
+            throw new Error(data.error || "注册失败")
+          }
+        }
+
         const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
         const auth = getCloudBaseAuth()
         await ensureCloudbasePersistence(auth)

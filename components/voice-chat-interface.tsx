@@ -69,6 +69,17 @@ export type Message = {
 }
 
 type RoomSettings = { adminUserId: string; joinMode: "public" | "password" } | null
+type CallSignalType = "call_invite" | "call_accept" | "call_reject" | "call_end" | "call_busy" | "webrtc_offer" | "webrtc_answer" | "webrtc_ice"
+type CallSignalPayload = {
+  type: CallSignalType
+  callId: string
+  fromUserId: string
+  fromUserName: string
+  toUserId: string
+  sdp?: string
+  sdpType?: RTCSdpType
+  candidate?: { candidate: string; sdpMid?: string | null; sdpMLineIndex?: number | null }
+}
 
 export function VoiceChatInterface() {
   const { profile, user, updateUserMetadata } = useAuth()
@@ -79,9 +90,17 @@ export function VoiceChatInterface() {
     const fallback = `user-${Math.random().toString(36).substring(2, 11)}`
     if (typeof window === "undefined") return fallback
     const storageKey = "voicelink_anon_user_id"
-    const existing = window.localStorage.getItem(storageKey)
+    let storage: Storage | null = null
+    try {
+      storage = window.sessionStorage
+    } catch {
+      storage = null
+    }
+    const existing = storage?.getItem(storageKey)
     if (existing) return existing
-    window.localStorage.setItem(storageKey, fallback)
+    try {
+      storage?.setItem(storageKey, fallback)
+    } catch { }
     return fallback
   })
   const [roomUserId, setRoomUserId] = useState("")
@@ -108,6 +127,16 @@ export function VoiceChatInterface() {
     saveHistory: true,
     platform: "web",
   })
+  const isTencentDeploy =
+    typeof process !== "undefined" &&
+    String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
+      .trim()
+      .toLowerCase() === "tencent"
+  const [callStatus, setCallStatus] = useState<"idle" | "outgoing" | "incoming" | "active">("idle")
+  const [callPeer, setCallPeer] = useState<{ id: string; name: string } | null>(null)
+  const [callId, setCallId] = useState<string | null>(null)
+  const [incomingCallOpen, setIncomingCallOpen] = useState(false)
+  const [isCallStreaming, setIsCallStreaming] = useState(false)
   const { toast } = useToast()
   const pollIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollAbortRef = useRef<AbortController | null>(null)
@@ -126,6 +155,226 @@ export function VoiceChatInterface() {
   const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const liveTranslateAbortRef = useRef<AbortController | null>(null)
   const liveTranslateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const callStatusRef = useRef(callStatus)
+  const callPeerRef = useRef<{ id: string; name: string } | null>(null)
+  const callIdRef = useRef<string | null>(null)
+  const callRecorderRef = useRef<MediaRecorder | null>(null)
+  const callStreamRef = useRef<MediaStream | null>(null)
+  const callQueueRef = useRef<Blob[]>([])
+  const callProcessingRef = useRef(false)
+  const callActiveRef = useRef(false)
+  const peerConnRef = useRef<RTCPeerConnection | null>(null)
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null)
+
+  useEffect(() => {
+    callStatusRef.current = callStatus
+    callPeerRef.current = callPeer
+    callIdRef.current = callId
+  }, [callStatus, callPeer, callId])
+
+  const randomId = useCallback((): string => {
+    if (typeof window !== "undefined" && typeof window.crypto?.randomUUID === "function") {
+      return window.crypto.randomUUID()
+    }
+    return `call-${Math.random().toString(36).substring(2, 11)}`
+  }, [])
+
+  const resetCallState = useCallback(() => {
+    setCallStatus("idle")
+    setCallPeer(null)
+    setCallId(null)
+    setIncomingCallOpen(false)
+    setIsCallStreaming(false)
+    callActiveRef.current = false
+    callQueueRef.current = []
+    callProcessingRef.current = false
+    if (callRecorderRef.current) {
+      try {
+        callRecorderRef.current.stop()
+      } catch { }
+      callRecorderRef.current = null
+    }
+    if (callStreamRef.current) {
+      try {
+        callStreamRef.current.getTracks().forEach((t) => t.stop())
+      } catch { }
+      callStreamRef.current = null
+    }
+    if (peerConnRef.current) {
+      try {
+        peerConnRef.current.onicecandidate = null
+        peerConnRef.current.ontrack = null
+        peerConnRef.current.close()
+      } catch { }
+      peerConnRef.current = null
+    }
+    if (remoteAudioRef.current) {
+      try {
+        remoteAudioRef.current.srcObject = null
+      } catch { }
+    }
+  }, [])
+
+  const ensureLocalMicStream = useCallback(async () => {
+    if (callStreamRef.current) return callStreamRef.current
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    callStreamRef.current = stream
+    return stream
+  }, [])
+
+
+
+  const sendSignal = useCallback(
+    async (toUserId: string, payload: Record<string, unknown>) => {
+      if (!roomId || !roomUserId) return
+      const res = await fetch("/api/rooms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "signal",
+          roomId,
+          userId: roomUserId,
+          toUserId,
+          payload,
+        }),
+      })
+      if (!res.ok) throw new Error("发送信令失败")
+    },
+    [roomId, roomUserId],
+  )
+
+  const ensurePeerConnection = useCallback(
+    async () => {
+      if (peerConnRef.current) return peerConnRef.current
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      })
+      pc.onicecandidate = (evt) => {
+        const cand = evt.candidate
+        const peer = callPeerRef.current
+        const cid = callIdRef.current
+        if (!peer || !cid || !cand) return
+        void sendSignal(peer.id, {
+          type: "webrtc_ice",
+          callId: cid,
+          candidate: {
+            candidate: cand.candidate,
+            sdpMid: cand.sdpMid,
+            sdpMLineIndex: cand.sdpMLineIndex,
+          },
+        }).catch(() => { })
+      }
+      pc.ontrack = (evt) => {
+        const [stream] = evt.streams
+        if (!stream) return
+        const el = remoteAudioRef.current
+        if (!el) return
+        try {
+          el.srcObject = stream
+          void el.play().catch(() => { })
+        } catch { }
+      }
+      const local = await ensureLocalMicStream()
+      for (const track of local.getTracks()) {
+        pc.addTrack(track, local)
+      }
+      peerConnRef.current = pc
+      setIsCallStreaming(true)
+      return pc
+    },
+    [ensureLocalMicStream, sendSignal],
+  )
+
+  const startOutgoingCall = useCallback(
+    async (target: { id: string; name: string }) => {
+      if (!target?.id) return
+      if (callStatusRef.current !== "idle") {
+        toast({ title: t("call.busySelfTitle"), description: t("call.busySelfDesc") })
+        return
+      }
+      const newId = randomId()
+      setCallStatus("outgoing")
+      setCallPeer({ id: target.id, name: target.name })
+      setCallId(newId)
+      try {
+        await sendSignal(target.id, {
+          type: "call_invite",
+          callId: newId,
+          fromUserId: roomUserId,
+          fromUserName: userName || t("call.unknownUser"),
+          toUserId: target.id,
+        } as CallSignalPayload)
+        toast({ title: t("call.outgoingTitle"), description: t("call.outgoingDesc", { name: target.name }) })
+      } catch (e) {
+        resetCallState()
+        toast({ title: t("call.failedTitle"), description: t("call.failedDesc"), variant: "destructive" })
+      }
+    },
+    [randomId, resetCallState, roomUserId, sendSignal, t, toast, userName],
+  )
+
+  const handleAcceptCall = useCallback(async () => {
+    const peer = callPeerRef.current
+    const id = callIdRef.current
+    if (!peer || !id) return
+    try {
+      await sendSignal(peer.id, {
+        type: "call_accept",
+        callId: id,
+        fromUserId: roomUserId,
+        fromUserName: userName || t("call.unknownUser"),
+        toUserId: peer.id,
+      } as CallSignalPayload)
+      setIncomingCallOpen(false)
+      setCallStatus("active")
+      callActiveRef.current = true
+      void ensurePeerConnection().catch(() => { })
+      toast({ title: t("call.acceptedTitle"), description: t("call.acceptedDesc", { name: peer.name }) })
+    } catch {
+      resetCallState()
+      toast({ title: t("call.failedTitle"), description: t("call.acceptFailedDesc"), variant: "destructive" })
+    }
+  }, [ensurePeerConnection, resetCallState, roomUserId, sendSignal, t, toast, userName])
+
+  const handleRejectCall = useCallback(async () => {
+    const peer = callPeerRef.current
+    const id = callIdRef.current
+    if (!peer || !id) {
+      resetCallState()
+      return
+    }
+    try {
+      await sendSignal(peer.id, {
+        type: "call_reject",
+        callId: id,
+        fromUserId: roomUserId,
+        fromUserName: userName || t("call.unknownUser"),
+        toUserId: peer.id,
+      } as CallSignalPayload)
+      resetCallState()
+      toast({ title: t("call.rejectedTitle"), description: t("call.rejectedDesc", { name: peer.name }) })
+    } catch {
+      resetCallState()
+    }
+  }, [resetCallState, roomUserId, sendSignal, t, toast, userName])
+
+  const handleEndCall = useCallback(async () => {
+    const peer = callPeerRef.current
+    const id = callIdRef.current
+    if (peer && id) {
+      try {
+        await sendSignal(peer.id, {
+          type: "call_end",
+          callId: id,
+          fromUserId: roomUserId,
+          fromUserName: userName || t("call.unknownUser"),
+          toUserId: peer.id,
+        } as CallSignalPayload)
+      } catch { }
+    }
+    resetCallState()
+    toast({ title: t("call.endedTitle"), description: t("call.endedDesc") })
+  }, [resetCallState, roomUserId, sendSignal, t, toast, userName])
 
   const resolveLanguageCode = useCallback((value: string): string => {
     const byCode = SUPPORTED_LANGUAGES.find((l) => l.code === value)
@@ -391,7 +640,13 @@ export function VoiceChatInterface() {
     }
 
     const storageKey = "voicelink_client_instance_id"
-    const existing = window.localStorage.getItem(storageKey)
+    let storage: Storage | null = null
+    try {
+      storage = window.sessionStorage
+    } catch {
+      storage = null
+    }
+    const existing = storage?.getItem(storageKey)
     if (existing) {
       clientInstanceIdRef.current = existing
       return existing
@@ -401,7 +656,9 @@ export function VoiceChatInterface() {
       typeof window.crypto?.randomUUID === "function"
         ? window.crypto.randomUUID()
         : `ci-${Math.random().toString(36).substring(2, 11)}`
-    window.localStorage.setItem(storageKey, created)
+    try {
+      storage?.setItem(storageKey, created)
+    } catch { }
     clientInstanceIdRef.current = created
     return created
   }, [])
@@ -415,6 +672,7 @@ export function VoiceChatInterface() {
       setRoomUserId("")
       setJoinedAuthUserId(null)
       setRoomSettings(null)
+      resetCallState()
       leaveInitiatedRef.current = false
       if (pollIntervalRef.current) {
         clearTimeout(pollIntervalRef.current)
@@ -452,18 +710,12 @@ export function VoiceChatInterface() {
       }
     }
 
-    const handleVisibility = () => {
-      if (document.visibilityState === "hidden") sendLeave()
-    }
-
     window.addEventListener("pagehide", sendLeave)
     window.addEventListener("beforeunload", sendLeave)
-    document.addEventListener("visibilitychange", handleVisibility)
 
     return () => {
       window.removeEventListener("pagehide", sendLeave)
       window.removeEventListener("beforeunload", sendLeave)
-      document.removeEventListener("visibilitychange", handleVisibility)
     }
   }, [isInRoom, roomId, roomUserId])
 
@@ -500,7 +752,7 @@ export function VoiceChatInterface() {
       }
       pollInFlightRef.current = true
       let shouldSchedule = true
-      let nextDelayMs = 2000
+      let nextDelayMs = callActiveRef.current || callStatusRef.current !== "idle" ? 500 : 2000
       try {
         const controller = new AbortController()
         if (pollAbortRef.current) pollAbortRef.current.abort()
@@ -536,6 +788,7 @@ export function VoiceChatInterface() {
               messages: Array<{ id: string; userId: string; userName: string; originalText: string; originalLanguage: string; timestamp: string; audioUrl?: string }>
             }
             settings?: { adminUserId?: string; joinMode?: "public" | "password" } | null
+            signals?: Array<{ from?: string; payload?: unknown }>
           }
           | null
         if (!data?.success || !data.room) {
@@ -560,6 +813,137 @@ export function VoiceChatInterface() {
             : user,
         )
         setUsers(nextUsers)
+
+        const signals = Array.isArray(data.signals) ? data.signals : []
+        if (signals.length > 0) {
+          for (const evt of signals) {
+            const fromId = typeof evt?.from === "string" ? evt.from : ""
+            const payload = (evt?.payload ?? {}) as Partial<CallSignalPayload> & Record<string, unknown>
+            const type = String(payload?.type ?? "")
+            if (!fromId || !type) continue
+            const fromUser = nextUsers.find((u) => u.id === fromId)
+            const fromName = String(payload.fromUserName || fromUser?.name || t("call.unknownUser"))
+            if (type === "call_invite") {
+              const incomingId = String(payload.callId || "")
+              if (callStatusRef.current !== "idle") {
+                try {
+                  await sendSignal(fromId, {
+                    type: "call_busy",
+                    callId: incomingId || randomId(),
+                    fromUserId: roomUserId,
+                    fromUserName: userName || t("call.unknownUser"),
+                    toUserId: fromId,
+                  } as CallSignalPayload)
+                } catch { }
+                continue
+              }
+              setCallPeer({ id: fromId, name: fromName })
+              setCallId(incomingId || randomId())
+              setCallStatus("incoming")
+              setIncomingCallOpen(true)
+              toast({ title: t("call.incomingTitle"), description: t("call.incomingDesc", { name: fromName }) })
+              continue
+            }
+            if (type === "call_accept") {
+              if (callStatusRef.current === "outgoing" && callPeerRef.current?.id === fromId) {
+                const acceptId = String(payload.callId || "")
+                if (!callIdRef.current || !acceptId || callIdRef.current === acceptId) {
+                  setCallStatus("active")
+                  callActiveRef.current = true
+                  void (async () => {
+                    try {
+                      const pc = await ensurePeerConnection()
+                      const offer = await pc.createOffer()
+                      await pc.setLocalDescription(offer)
+                      await sendSignal(fromId, {
+                        type: "webrtc_offer",
+                        callId: callIdRef.current,
+                        sdp: offer.sdp,
+                        sdpType: offer.type,
+                      })
+                    } catch { }
+                  })()
+                  toast({ title: t("call.acceptedTitle"), description: t("call.acceptedDesc", { name: fromName }) })
+                }
+              }
+              continue
+            }
+            if (type === "webrtc_offer") {
+              const incomingId = String(payload.callId || "")
+              if (callStatusRef.current !== "active" || (incomingId && callIdRef.current && incomingId !== callIdRef.current)) {
+                continue
+              }
+              const sdp = typeof payload.sdp === "string" ? payload.sdp : ""
+              const sdpType = (typeof payload.sdpType === "string" ? payload.sdpType : "offer") as RTCSdpType
+              if (!sdp) continue
+              void (async () => {
+                try {
+                  const pc = await ensurePeerConnection()
+                  await pc.setRemoteDescription({ type: sdpType, sdp })
+                  const answer = await pc.createAnswer()
+                  await pc.setLocalDescription(answer)
+                  await sendSignal(fromId, {
+                    type: "webrtc_answer",
+                    callId: callIdRef.current,
+                    sdp: answer.sdp,
+                    sdpType: answer.type,
+                  })
+                } catch { }
+              })()
+              continue
+            }
+            if (type === "webrtc_answer") {
+              const incomingId = String(payload.callId || "")
+              if (callStatusRef.current !== "active" || (incomingId && callIdRef.current && incomingId !== callIdRef.current)) {
+                continue
+              }
+              const sdp = typeof payload.sdp === "string" ? payload.sdp : ""
+              const sdpType = (typeof payload.sdpType === "string" ? payload.sdpType : "answer") as RTCSdpType
+              if (!sdp) continue
+              const pc = peerConnRef.current
+              if (!pc) continue
+              try {
+                await pc.setRemoteDescription({ type: sdpType, sdp })
+              } catch { }
+              continue
+            }
+            if (type === "webrtc_ice") {
+              const incomingId = String(payload.callId || "")
+              if (callStatusRef.current !== "active" || (incomingId && callIdRef.current && incomingId !== callIdRef.current)) {
+                continue
+              }
+              const cand = payload.candidate as Record<string, unknown> | null
+              if (!cand) continue
+              const candidate = typeof cand.candidate === "string" ? cand.candidate : ""
+              const sdpMid = typeof cand.sdpMid === "string" ? cand.sdpMid : null
+              const sdpMLineIndex = typeof cand.sdpMLineIndex === "number" ? cand.sdpMLineIndex : null
+              const pc = peerConnRef.current
+              if (!pc || !candidate) continue
+              try {
+                await pc.addIceCandidate({ candidate, sdpMid: sdpMid ?? undefined, sdpMLineIndex: sdpMLineIndex ?? undefined })
+              } catch { }
+              continue
+            }
+            if (type === "call_reject" || type === "call_busy") {
+              if (callStatusRef.current === "outgoing" && callPeerRef.current?.id === fromId) {
+                resetCallState()
+                toast({
+                  title: type === "call_busy" ? t("call.busyTitle") : t("call.rejectedByPeerTitle"),
+                  description: type === "call_busy" ? t("call.busyDesc", { name: fromName }) : t("call.rejectedByPeerDesc", { name: fromName }),
+                })
+              }
+              continue
+            }
+            if (type === "call_end") {
+              const endId = String(payload.callId || "")
+              if (callStatusRef.current !== "idle" && (!endId || endId === callIdRef.current)) {
+                resetCallState()
+                toast({ title: t("call.endedByPeerTitle"), description: t("call.endedByPeerDesc") })
+              }
+              continue
+            }
+          }
+        }
 
         const avatarById = new Map(room.users.map((u) => [u.id, u.avatar]))
         const newMessages = await Promise.all(
@@ -788,6 +1172,19 @@ export function VoiceChatInterface() {
   const handleLeaveRoom = useCallback(async () => {
     try {
       leaveInitiatedRef.current = true
+      const peer = callPeerRef.current
+      const id = callIdRef.current
+      if (peer && id) {
+        try {
+          await sendSignal(peer.id, {
+            type: "call_end",
+            callId: id,
+            fromUserId: roomUserId,
+            fromUserName: userName || t("call.unknownUser"),
+            toUserId: peer.id,
+          } as CallSignalPayload)
+        } catch { }
+      }
       const res = await fetch("/api/rooms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -805,7 +1202,7 @@ export function VoiceChatInterface() {
     } catch (error) {
       console.error("[v0] Leave room error:", error)
     }
-  }, [exitRoom, roomId, roomUserId, t])
+  }, [exitRoom, roomId, roomUserId, sendSignal, t, userName])
 
   useEffect(() => {
     if (!isInRoom) return
@@ -935,6 +1332,7 @@ export function VoiceChatInterface() {
 
   return (
     <div className="flex flex-col h-screen">
+      <audio ref={remoteAudioRef} className="hidden" />
       <Header
         onClearChat={handleClearChat}
         messageCount={messages.length}
@@ -955,6 +1353,10 @@ export function VoiceChatInterface() {
               adminUserId={roomSettings?.adminUserId ?? null}
               canKick={isAdmin}
               onKick={handleKickUser}
+              onCall={(targetUserId) => {
+                const target = users.find((u) => u.id === targetUserId)
+                if (target) void startOutgoingCall({ id: target.id, name: target.name })
+              }}
             />
           </div>
           <AdSlot slotKey="room_sidebar" variant="sidebar" limit={2} fetchLimit={6} rotateMs={7000} />
@@ -986,6 +1388,10 @@ export function VoiceChatInterface() {
                         adminUserId={roomSettings?.adminUserId ?? null}
                         canKick={isAdmin}
                         onKick={handleKickUser}
+                        onCall={(targetUserId) => {
+                          const target = users.find((u) => u.id === targetUserId)
+                          if (target) void startOutgoingCall({ id: target.id, name: target.name })
+                        }}
                       />
                     </div>
                   </SheetContent>
@@ -1016,6 +1422,16 @@ export function VoiceChatInterface() {
                   aria-label={t("roomSettings.title")}
                 >
                   <Settings className="w-4 h-4" />
+                </Button>
+              ) : null}
+              {callStatus !== "idle" && callPeer ? (
+                <Button
+                  variant={callStatus === "active" ? "destructive" : "secondary"}
+                  size="sm"
+                  onClick={handleEndCall}
+                  className="h-9 shrink-0"
+                >
+                  {callStatus === "active" ? t("call.endedTitle") : t("common.cancel")}
                 </Button>
               ) : null}
               <Button
@@ -1249,6 +1665,31 @@ export function VoiceChatInterface() {
             <Button onClick={saveRoomSettings} disabled={roomSettingsSaving}>
               {roomSettingsSaving ? t("roomSettings.saving") : t("roomSettings.save")}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={incomingCallOpen}
+        onOpenChange={(open) => {
+          setIncomingCallOpen(open)
+          if (!open && callStatusRef.current === "incoming") {
+            void handleRejectCall()
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>{t("call.incomingTitle")}</DialogTitle>
+            <DialogDescription>
+              {callPeer ? t("call.incomingDesc", { name: callPeer.name }) : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="secondary" onClick={handleRejectCall}>
+              {t("call.rejectedTitle")}
+            </Button>
+            <Button onClick={handleAcceptCall}>{t("call.acceptedTitle")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
