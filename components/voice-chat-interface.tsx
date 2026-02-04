@@ -7,12 +7,12 @@ import { VoiceControls } from "@/components/voice-controls"
 import { RoomJoin } from "@/components/room-join"
 import { UserList, type User } from "@/components/user-list"
 import { AdSlot } from "@/components/ad-slot"
-import { detectLanguageFromText, transcribeAudio, translateText } from "@/lib/audio-utils"
+import { detectLanguageFromText, encodeFloat32ToWav, resampleTo16k, transcribeAudio, translateText } from "@/lib/audio-utils"
 import { useToast } from "@/hooks/use-toast"
 import type { AppSettings } from "@/components/settings-dialog"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { LogOut, Copy, Check, Settings, Users } from "lucide-react"
+import { LogOut, Copy, Check, Settings, Users, Mic, MicOff, PhoneOff } from "lucide-react"
 import { useAuth } from "@/components/auth-provider"
 import { useI18n } from "@/components/i18n-provider"
 import { Sheet, SheetContent, SheetTrigger, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
@@ -20,6 +20,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 
 export type Language = {
   code: string
@@ -69,7 +70,7 @@ export type Message = {
 }
 
 type RoomSettings = { adminUserId: string; joinMode: "public" | "password" } | null
-type CallSignalType = "call_invite" | "call_accept" | "call_reject" | "call_end" | "call_busy" | "webrtc_offer" | "webrtc_answer" | "webrtc_ice"
+type CallSignalType = "call_invite" | "call_accept" | "call_reject" | "call_end" | "call_busy" | "webrtc_offer" | "webrtc_answer" | "webrtc_ice" | "call_caption"
 type CallSignalPayload = {
   type: CallSignalType
   callId: string
@@ -79,6 +80,11 @@ type CallSignalPayload = {
   sdp?: string
   sdpType?: RTCSdpType
   candidate?: { candidate: string; sdpMid?: string | null; sdpMLineIndex?: number | null }
+  transcript?: string
+  translation?: string
+  sourceLanguage?: string
+  targetLanguage?: string
+  timestamp?: number
 }
 
 export function VoiceChatInterface() {
@@ -117,6 +123,9 @@ export function VoiceChatInterface() {
   const [isRecording, setIsRecording] = useState(false)
   const [liveTranscript, setLiveTranscript] = useState("")
   const [liveTranslation, setLiveTranslation] = useState("")
+  const [remoteLiveTranscript, setRemoteLiveTranscript] = useState("")
+  const [remoteLiveTranslation, setRemoteLiveTranslation] = useState("")
+  const [remoteLiveUserName, setRemoteLiveUserName] = useState("")
   const [liveSpeechSupported, setLiveSpeechSupported] = useState(true)
   const [isProcessing, setIsProcessing] = useState(false)
   const [settings, setSettings] = useState<AppSettings>({
@@ -137,6 +146,9 @@ export function VoiceChatInterface() {
   const [callId, setCallId] = useState<string | null>(null)
   const [incomingCallOpen, setIncomingCallOpen] = useState(false)
   const [isCallStreaming, setIsCallStreaming] = useState(false)
+  const [callDurationSec, setCallDurationSec] = useState(0)
+  const [isCallMuted, setIsCallMuted] = useState(false)
+  const [callLiveEnabled, setCallLiveEnabled] = useState(true)
   const { toast } = useToast()
   const pollIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollAbortRef = useRef<AbortController | null>(null)
@@ -155,6 +167,17 @@ export function VoiceChatInterface() {
   const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const liveTranslateAbortRef = useRef<AbortController | null>(null)
   const liveTranslateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const liveCaptionSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fallbackRecorderRef = useRef<MediaRecorder | null>(null)
+  const fallbackStreamRef = useRef<MediaStream | null>(null)
+  const fallbackStreamOwnedRef = useRef(false)
+  const fallbackQueueRef = useRef<Blob[]>([])
+  const fallbackProcessingRef = useRef(false)
+  const fallbackLastTextRef = useRef("")
+  const fallbackAudioContextRef = useRef<AudioContext | null>(null)
+  const fallbackProcessorRef = useRef<ScriptProcessorNode | null>(null)
+  const fallbackBufferedChunksRef = useRef<Float32Array[]>([])
+  const fallbackBufferedSamplesRef = useRef(0)
   const callStatusRef = useRef(callStatus)
   const callPeerRef = useRef<{ id: string; name: string } | null>(null)
   const callIdRef = useRef<string | null>(null)
@@ -165,6 +188,7 @@ export function VoiceChatInterface() {
   const callActiveRef = useRef(false)
   const peerConnRef = useRef<RTCPeerConnection | null>(null)
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null)
+  const liveListenRef = useRef(false)
 
   useEffect(() => {
     callStatusRef.current = callStatus
@@ -179,12 +203,56 @@ export function VoiceChatInterface() {
     return `call-${Math.random().toString(36).substring(2, 11)}`
   }, [])
 
+  const stopFallbackLive = useCallback(() => {
+    if (fallbackRecorderRef.current) {
+      try {
+        if (fallbackRecorderRef.current.state !== "inactive") {
+          fallbackRecorderRef.current.stop()
+        }
+      } catch { }
+      fallbackRecorderRef.current = null
+    }
+    if (fallbackProcessorRef.current) {
+      try {
+        fallbackProcessorRef.current.disconnect()
+      } catch { }
+      fallbackProcessorRef.current = null
+    }
+    if (fallbackAudioContextRef.current) {
+      try {
+        void fallbackAudioContextRef.current.close()
+      } catch { }
+      fallbackAudioContextRef.current = null
+    }
+    if (fallbackStreamRef.current && fallbackStreamOwnedRef.current) {
+      try {
+        fallbackStreamRef.current.getTracks().forEach((t) => t.stop())
+      } catch { }
+    }
+    fallbackStreamRef.current = null
+    fallbackStreamOwnedRef.current = false
+    fallbackQueueRef.current = []
+    fallbackProcessingRef.current = false
+    fallbackLastTextRef.current = ""
+    fallbackBufferedChunksRef.current = []
+    fallbackBufferedSamplesRef.current = 0
+  }, [])
+
   const resetCallState = useCallback(() => {
     setCallStatus("idle")
     setCallPeer(null)
     setCallId(null)
     setIncomingCallOpen(false)
     setIsCallStreaming(false)
+    setCallDurationSec(0)
+    setIsCallMuted(false)
+    setCallLiveEnabled(true)
+    setLiveTranscript("")
+    setLiveTranslation("")
+    setRemoteLiveTranscript("")
+    setRemoteLiveTranslation("")
+    setRemoteLiveUserName("")
+    stopFallbackLive()
     callActiveRef.current = false
     callQueueRef.current = []
     callProcessingRef.current = false
@@ -213,6 +281,17 @@ export function VoiceChatInterface() {
         remoteAudioRef.current.srcObject = null
       } catch { }
     }
+  }, [stopFallbackLive])
+
+  const callPeerUser = useMemo(() => users.find((item) => item.id === callPeer?.id), [users, callPeer?.id])
+
+  const formatCallDuration = useCallback((value: number) => {
+    const total = Math.max(0, Math.floor(value))
+    const hours = Math.floor(total / 3600)
+    const minutes = Math.floor((total % 3600) / 60)
+    const seconds = total % 60
+    if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    return `${minutes}:${String(seconds).padStart(2, "0")}`
   }, [])
 
   const ensureLocalMicStream = useCallback(async () => {
@@ -221,6 +300,126 @@ export function VoiceChatInterface() {
     callStreamRef.current = stream
     return stream
   }, [])
+
+  const startFallbackLive = useCallback(async () => {
+    if (fallbackRecorderRef.current || fallbackProcessorRef.current) return
+    try {
+      let stream: MediaStream | null = callStatusRef.current === "active" ? callStreamRef.current : null
+      let owned = false
+      if (!stream) {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        owned = true
+      }
+      fallbackStreamRef.current = stream
+      fallbackStreamOwnedRef.current = owned
+
+      const processQueue = async () => {
+        if (fallbackProcessingRef.current) return
+        const nextBlob = fallbackQueueRef.current.shift()
+        if (!nextBlob) return
+        fallbackProcessingRef.current = true
+        try {
+          const text = await transcribeAudio(nextBlob, sourceLanguage.code)
+          const normalized = text.trim()
+          if (normalized) {
+            const prev = fallbackLastTextRef.current
+            let nextText = normalized
+            if (prev) {
+              if (normalized.startsWith(prev)) {
+                nextText = normalized
+              } else if (prev.startsWith(normalized)) {
+                nextText = prev
+              } else {
+                nextText = `${prev} ${normalized}`.trim()
+              }
+            }
+            fallbackLastTextRef.current = nextText
+            setLiveTranscript(nextText)
+          }
+        } catch { }
+        fallbackProcessingRef.current = false
+        if (fallbackQueueRef.current.length > 0) {
+          void processQueue()
+        }
+      }
+
+      if (typeof MediaRecorder !== "undefined") {
+        const mimeTypeCandidates = isTencentDeploy
+          ? ["audio/ogg;codecs=opus", "audio/ogg", "audio/webm;codecs=opus", "audio/webm"]
+          : ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg"]
+        const supportedMimeType = mimeTypeCandidates.find((candidate) =>
+          MediaRecorder.isTypeSupported(candidate)
+        )
+        const mediaRecorder = supportedMimeType
+          ? new MediaRecorder(stream, { mimeType: supportedMimeType })
+          : new MediaRecorder(stream)
+        fallbackRecorderRef.current = mediaRecorder
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            fallbackQueueRef.current.push(event.data)
+            void processQueue()
+          }
+        }
+        mediaRecorder.start(1200)
+        setLiveSpeechSupported(true)
+        return
+      }
+
+      const AudioContextCtor =
+        (window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext ??
+        (window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      if (!AudioContextCtor) {
+        setLiveSpeechSupported(false)
+        return
+      }
+
+      const audioContext = new AudioContextCtor()
+      fallbackAudioContextRef.current = audioContext
+      const source = audioContext.createMediaStreamSource(stream)
+      const processor = audioContext.createScriptProcessor(4096, 1, 1)
+      const gainNode = audioContext.createGain()
+      gainNode.gain.value = 0
+      source.connect(processor)
+      processor.connect(gainNode)
+      gainNode.connect(audioContext.destination)
+      fallbackProcessorRef.current = processor
+      processor.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0)
+        fallbackBufferedChunksRef.current.push(new Float32Array(input))
+        fallbackBufferedSamplesRef.current += input.length
+        const sampleRate = event.inputBuffer.sampleRate
+        const targetSamples = Math.floor(sampleRate * 1.2)
+        if (fallbackBufferedSamplesRef.current >= targetSamples) {
+          const total = fallbackBufferedSamplesRef.current
+          const merged = new Float32Array(total)
+          let offset = 0
+          for (const chunk of fallbackBufferedChunksRef.current) {
+            merged.set(chunk, offset)
+            offset += chunk.length
+          }
+          fallbackBufferedChunksRef.current = []
+          fallbackBufferedSamplesRef.current = 0
+          void (async () => {
+            try {
+              const resampled = await resampleTo16k(merged, sampleRate)
+              const wavBuffer = encodeFloat32ToWav(resampled, 16000)
+              fallbackQueueRef.current.push(new Blob([wavBuffer], { type: "audio/wav" }))
+              void processQueue()
+            } catch { }
+          })()
+        }
+      }
+      setLiveSpeechSupported(true)
+    } catch {
+      setLiveSpeechSupported(false)
+      toast({
+        title: t("toast.errorTitle"),
+        description: t("voice.micPermissionAlert"),
+        variant: "destructive",
+      })
+      stopFallbackLive()
+    }
+  }, [encodeFloat32ToWav, isTencentDeploy, resampleTo16k, sourceLanguage.code, stopFallbackLive, t, toast, transcribeAudio])
 
 
 
@@ -376,6 +575,33 @@ export function VoiceChatInterface() {
     toast({ title: t("call.endedTitle"), description: t("call.endedDesc") })
   }, [resetCallState, roomUserId, sendSignal, t, toast, userName])
 
+  const handleToggleCallLive = useCallback(() => {
+    setCallLiveEnabled((prev) => {
+      const next = !prev
+      if (!next) {
+        setLiveTranscript("")
+        setLiveTranslation("")
+        const peer = callPeerRef.current
+        const id = callIdRef.current
+        if (callStatusRef.current === "active" && peer?.id && id) {
+          void sendSignal(peer.id, {
+            type: "call_caption",
+            callId: id,
+            fromUserId: roomUserId,
+            fromUserName: userName || t("call.unknownUser"),
+            toUserId: peer.id,
+            transcript: "",
+            translation: "",
+            sourceLanguage: sourceLanguage.code,
+            targetLanguage: targetLanguage.code,
+            timestamp: Date.now(),
+          } as CallSignalPayload).catch(() => { })
+        }
+      }
+      return next
+    })
+  }, [roomUserId, sendSignal, sourceLanguage.code, t, targetLanguage.code, userName])
+
   const resolveLanguageCode = useCallback((value: string): string => {
     const byCode = SUPPORTED_LANGUAGES.find((l) => l.code === value)
     if (byCode) return byCode.code
@@ -396,11 +622,36 @@ export function VoiceChatInterface() {
     return (normalized.split("-")[0] ?? normalized).toLowerCase()
   }, [])
 
+  const shouldLiveListen = isRecording || (callStatus === "active" && callLiveEnabled)
+
+  useEffect(() => {
+    liveListenRef.current = shouldLiveListen
+  }, [shouldLiveListen])
+
+  useEffect(() => {
+    if (callStatus !== "active") return
+    const startAt = Date.now()
+    setCallDurationSec(0)
+    const timer = setInterval(() => {
+      setCallDurationSec(Math.floor((Date.now() - startAt) / 1000))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [callStatus])
+
+  useEffect(() => {
+    if (callStatus !== "active") return
+    const stream = callStreamRef.current
+    if (!stream) return
+    for (const track of stream.getAudioTracks()) {
+      track.enabled = !isCallMuted
+    }
+  }, [callStatus, isCallMuted])
+
   useEffect(() => {
     if (typeof window === "undefined") return
     if (!isInRoom) return
 
-    if (!isRecording) {
+    if (!shouldLiveListen) {
       if (speechRecognitionRef.current) {
         try {
           speechRecognitionRef.current.onresult = null
@@ -410,6 +661,7 @@ export function VoiceChatInterface() {
         } catch { }
         speechRecognitionRef.current = null
       }
+      stopFallbackLive()
       return
     }
 
@@ -420,10 +672,11 @@ export function VoiceChatInterface() {
     }
     const SpeechRecognition = w.SpeechRecognition ?? w.webkitSpeechRecognition ?? w.mozSpeechRecognition
     if (!SpeechRecognition) {
-      setLiveSpeechSupported(false)
+      void startFallbackLive()
       return
     }
     setLiveSpeechSupported(true)
+    stopFallbackLive()
 
     const recognition = new SpeechRecognition()
     recognition.continuous = true
@@ -447,11 +700,20 @@ export function VoiceChatInterface() {
     }
 
     recognition.onerror = () => {
-      setLiveSpeechSupported(false)
+      if (speechRecognitionRef.current === recognition) {
+        try {
+          recognition.onresult = null
+          recognition.onerror = null
+          recognition.onend = null
+          recognition.stop()
+        } catch { }
+        speechRecognitionRef.current = null
+      }
+      void startFallbackLive()
     }
 
     recognition.onend = () => {
-      if (!isRecording) return
+      if (!liveListenRef.current) return
       try {
         recognition.start()
       } catch { }
@@ -461,7 +723,10 @@ export function VoiceChatInterface() {
     try {
       recognition.start()
     } catch {
-      setLiveSpeechSupported(false)
+      if (speechRecognitionRef.current === recognition) {
+        speechRecognitionRef.current = null
+      }
+      void startFallbackLive()
     }
 
     return () => {
@@ -473,7 +738,7 @@ export function VoiceChatInterface() {
       } catch { }
       if (speechRecognitionRef.current === recognition) speechRecognitionRef.current = null
     }
-  }, [isInRoom, isRecording, sourceLanguage.code, uiLocaleToLanguageCode])
+  }, [isInRoom, shouldLiveListen, sourceLanguage.code, startFallbackLive, stopFallbackLive, uiLocaleToLanguageCode])
 
   useEffect(() => {
     if (!isInRoom) return
@@ -523,6 +788,37 @@ export function VoiceChatInterface() {
       }
     }
   }, [isInRoom, liveTranscript, primaryOf, sourceLanguage.code, targetLanguage.code])
+
+  useEffect(() => {
+    if (callStatus !== "active") return
+    if (!callPeer?.id || !callId) return
+    if (!callLiveEnabled) return
+    if (!liveTranscript.trim() && !liveTranslation.trim()) return
+    if (liveCaptionSendTimerRef.current) {
+      clearTimeout(liveCaptionSendTimerRef.current)
+      liveCaptionSendTimerRef.current = null
+    }
+    liveCaptionSendTimerRef.current = setTimeout(() => {
+      void sendSignal(callPeer.id, {
+        type: "call_caption",
+        callId,
+        fromUserId: roomUserId,
+        fromUserName: userName || t("call.unknownUser"),
+        toUserId: callPeer.id,
+        transcript: liveTranscript,
+        translation: liveTranslation,
+        sourceLanguage: sourceLanguage.code,
+        targetLanguage: targetLanguage.code,
+        timestamp: Date.now(),
+      } as CallSignalPayload).catch(() => { })
+    }, 300)
+    return () => {
+      if (liveCaptionSendTimerRef.current) {
+        clearTimeout(liveCaptionSendTimerRef.current)
+        liveCaptionSendTimerRef.current = null
+      }
+    }
+  }, [callId, callLiveEnabled, callPeer?.id, callStatus, liveTranscript, liveTranslation, roomUserId, sendSignal, sourceLanguage.code, t, targetLanguage.code, userName])
 
   const sourceLanguageOptions = useMemo<Language[]>(() => {
     const autoLabel = locale === "zh" ? "自动识别" : "Auto Detect"
@@ -922,6 +1218,18 @@ export function VoiceChatInterface() {
               try {
                 await pc.addIceCandidate({ candidate, sdpMid: sdpMid ?? undefined, sdpMLineIndex: sdpMLineIndex ?? undefined })
               } catch { }
+              continue
+            }
+            if (type === "call_caption") {
+              const incomingId = String(payload.callId || "")
+              if (callStatusRef.current !== "active" || (incomingId && callIdRef.current && incomingId !== callIdRef.current)) {
+                continue
+              }
+              const transcript = typeof payload.transcript === "string" ? payload.transcript : ""
+              const translation = typeof payload.translation === "string" ? payload.translation : ""
+              setRemoteLiveTranscript(transcript)
+              setRemoteLiveTranslation(translation)
+              setRemoteLiveUserName(fromName)
               continue
             }
             if (type === "call_reject" || type === "call_busy") {
@@ -1447,6 +1755,49 @@ export function VoiceChatInterface() {
               </Button>
             </div>
 
+            {callStatus === "active" && callPeer ? (
+              <div className="shrink-0 border-b border-border bg-muted/20 px-3 py-3">
+                <div className="flex items-center gap-3">
+                  <Avatar className="h-10 w-10">
+                    <AvatarImage src={callPeerUser?.avatar || ""} alt={callPeer.name} />
+                    <AvatarFallback>{callPeer.name?.slice(0, 1) || "?"}</AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold truncate">{callPeer.name}</div>
+                    <div className="text-xs text-muted-foreground">{t("call.acceptedDesc", { name: callPeer.name })}</div>
+                  </div>
+                  <div className="text-xs text-muted-foreground font-mono tabular-nums">
+                    {formatCallDuration(callDurationSec)}
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Button
+                    variant={isCallMuted ? "secondary" : "outline"}
+                    size="sm"
+                    onClick={() => setIsCallMuted((prev) => !prev)}
+                    className="h-9"
+                    aria-label={isCallMuted ? t("call.unmute") : t("call.mute")}
+                  >
+                    {isCallMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                    <span className="ml-2">{isCallMuted ? t("call.unmute") : t("call.mute")}</span>
+                  </Button>
+                  <Button
+                    variant={callLiveEnabled ? "secondary" : "outline"}
+                    size="sm"
+                    onClick={handleToggleCallLive}
+                    className="h-9"
+                    aria-label={t("voice.liveTranslationTitle")}
+                  >
+                    {t("voice.liveTranslationTitle")}
+                  </Button>
+                  <Button variant="destructive" size="sm" onClick={handleEndCall} className="h-9">
+                    <PhoneOff className="w-4 h-4" />
+                    <span className="ml-2">{t("call.hangup")}</span>
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
             <ChatArea
               variant="embedded"
               messages={messages}
@@ -1456,7 +1807,8 @@ export function VoiceChatInterface() {
             />
 
             <div className="shrink-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-t border-border shadow-sm">
-              {(isRecording || isProcessing) && (liveTranscript.trim() || !liveSpeechSupported) ? (
+              {(isRecording || isProcessing || (callStatus === "active" && callLiveEnabled)) &&
+                (liveTranscript.trim() || !liveSpeechSupported) ? (
                 <div className="absolute bottom-full left-0 right-0 p-4 bg-gradient-to-t from-background via-background/90 to-transparent pointer-events-none flex justify-center">
                   <div className="w-full max-w-2xl bg-card/95 border shadow-lg rounded-xl p-4 pointer-events-auto backdrop-blur animate-in fade-in slide-in-from-bottom-2">
                     {!liveSpeechSupported ? (
@@ -1472,6 +1824,26 @@ export function VoiceChatInterface() {
                           <div className="pt-2 border-t border-border/50">
                             <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{t("voice.liveTranslationTitle")}</div>
                             <div className="text-base font-medium leading-relaxed text-primary">{liveTranslation}</div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {remoteLiveTranscript.trim() || remoteLiveTranslation.trim() ? (
+                      <div className="space-y-3 pt-3 mt-3 border-t border-border/60">
+                        {remoteLiveTranscript.trim() ? (
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                              {remoteLiveUserName ? `${remoteLiveUserName} · ${t("voice.liveCaptionTitle")}` : t("voice.liveCaptionTitle")}
+                            </div>
+                            <div className="text-base font-medium leading-relaxed">{remoteLiveTranscript}</div>
+                          </div>
+                        ) : null}
+                        {remoteLiveTranslation.trim() ? (
+                          <div className="pt-2 border-t border-border/50">
+                            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                              {remoteLiveUserName ? `${remoteLiveUserName} · ${t("voice.liveTranslationTitle")}` : t("voice.liveTranslationTitle")}
+                            </div>
+                            <div className="text-base font-medium leading-relaxed text-primary">{remoteLiveTranslation}</div>
                           </div>
                         ) : null}
                       </div>
