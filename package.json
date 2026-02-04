@@ -7,7 +7,7 @@
   },
   "packageManager": "npm@10.9.2",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 0.0.0.0",
     "build": "node scripts/adapt-schema.js && node -v && npm -v && prisma generate && next build",
     "vercel-build": "node -v && npm -v && prisma generate && next build",
     "start": "next start",

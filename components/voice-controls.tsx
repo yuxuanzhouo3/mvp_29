@@ -12,6 +12,8 @@ type VoiceControlsProps = {
   onRecordingComplete: (audioBlob: Blob) => void
   onRecordingChange?: (isRecording: boolean) => void
   variant?: "stacked" | "inline"
+  showHint?: boolean
+  className?: string
 }
 
 export function VoiceControls({
@@ -19,6 +21,8 @@ export function VoiceControls({
   onRecordingComplete,
   onRecordingChange,
   variant = "stacked",
+  showHint = true,
+  className,
 }: VoiceControlsProps) {
   const { isRecording, recordingTime, audioBlob, startRecording, stopRecording, clearRecording } = useAudioRecorder()
   const { t } = useI18n()
@@ -118,8 +122,8 @@ export function VoiceControls({
   }, [])
 
   return (
-    <div className={isInline ? "flex items-center gap-3" : "flex flex-col items-center gap-4 pb-6"}>
-      <div className={isInline ? "flex-1 min-w-0" : ""}>
+    <div className={`${isInline ? "flex items-center gap-3" : "flex flex-col items-center gap-4"} ${className || ""}`}>
+      <div className={isInline ? "flex-1 min-w-0" : "min-h-[24px] flex flex-col justify-end"}>
         {isProcessing && (
           <div className={isInline ? "flex items-center gap-2 text-muted-foreground" : "flex items-center gap-2 text-muted-foreground"}>
             <Spinner className="w-4 h-4" />
@@ -139,8 +143,8 @@ export function VoiceControls({
           </div>
         )}
 
-        {!isProcessing && !isRecording && (
-          <p className={isInline ? "text-xs text-muted-foreground leading-relaxed" : "text-sm text-muted-foreground text-center max-w-xs"}>
+        {!isProcessing && !isRecording && isInline && (
+          <p className="text-xs text-muted-foreground leading-relaxed">
             {t("voice.hintHold")}
           </p>
         )}
@@ -168,7 +172,7 @@ export function VoiceControls({
         )}
       </Button>
 
-      {!isInline && (
+      {!isInline && showHint && (
         <p className="text-sm text-muted-foreground text-center max-w-xs">
           {isRecording ? t("voice.hintRelease") : t("voice.hintHold")}
         </p>

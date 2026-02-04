@@ -1353,6 +1353,7 @@ export function VoiceChatInterface() {
               adminUserId={roomSettings?.adminUserId ?? null}
               canKick={isAdmin}
               onKick={handleKickUser}
+              roomId={roomId}
               onCall={(targetUserId) => {
                 const target = users.find((u) => u.id === targetUserId)
                 if (target) void startOutgoingCall({ id: target.id, name: target.name })
@@ -1388,6 +1389,7 @@ export function VoiceChatInterface() {
                         adminUserId={roomSettings?.adminUserId ?? null}
                         canKick={isAdmin}
                         onKick={handleKickUser}
+                        roomId={roomId}
                         onCall={(targetUserId) => {
                           const target = users.find((u) => u.id === targetUserId)
                           if (target) void startOutgoingCall({ id: target.id, name: target.name })
@@ -1445,72 +1447,6 @@ export function VoiceChatInterface() {
               </Button>
             </div>
 
-            <div className="shrink-0 px-2 lg:px-3 py-2 border-b border-border hidden lg:block">
-              <div className="flex flex-wrap items-end gap-3">
-                <div className="min-w-[200px] flex-1">
-                  <Label className="text-xs text-muted-foreground">{t("language.source")}</Label>
-                  <Select
-                    value={sourceLanguage.code}
-                    onValueChange={(code) => {
-                      const next = sourceLanguageOptions.find((item) => item.code === code)
-                      if (next) setSourceLanguage(next)
-                    }}
-                  >
-                    <SelectTrigger className="w-full h-9">
-                      <SelectValue>
-                        <span className="flex items-center gap-2 truncate">
-                          <span>{sourceLanguage.flag}</span>
-                          <span className="truncate">{sourceLanguage.name}</span>
-                        </span>
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {sourceLanguageOptions.map((lang) => (
-                        <SelectItem key={lang.code} value={lang.code}>
-                          <span className="flex items-center gap-2">
-                            <span>{lang.flag}</span>
-                            <span>{lang.name}</span>
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="min-w-[200px] flex-1">
-                  <Label className="text-xs text-muted-foreground">{t("language.target")}</Label>
-                  <Select
-                    value={targetLanguage.code}
-                    onValueChange={(code) => {
-                      const next = SUPPORTED_LANGUAGES.find((item) => item.code === code)
-                      if (next) setTargetLanguage(next)
-                    }}
-                  >
-                    <SelectTrigger className="w-full h-9">
-                      <SelectValue>
-                        <span className="flex items-center gap-2 truncate">
-                          <span>{targetLanguage.flag}</span>
-                          <span className="truncate">{targetLanguage.name}</span>
-                        </span>
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SUPPORTED_LANGUAGES.map((lang) => (
-                        <SelectItem key={lang.code} value={lang.code}>
-                          <span className="flex items-center gap-2">
-                            <span>{lang.flag}</span>
-                            <span>{lang.name}</span>
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {t("language.hint", { source: sourceLanguage.name, target: targetLanguage.name })}
-                </div>
-              </div>
-            </div>
-
             <ChatArea
               variant="embedded"
               messages={messages}
@@ -1519,11 +1455,37 @@ export function VoiceChatInterface() {
               autoPlay={settings.autoPlayTranslations}
             />
 
-            <div className="shrink-0 px-2 lg:px-3 py-2 border-t border-border bg-background/50">
-              <div className="mb-2 lg:hidden">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <div className="min-w-0">
-                    <Label className="text-xs text-muted-foreground">{t("language.source")}</Label>
+            <div className="shrink-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-t border-border shadow-sm">
+              {(isRecording || isProcessing) && (liveTranscript.trim() || !liveSpeechSupported) ? (
+                <div className="absolute bottom-full left-0 right-0 p-4 bg-gradient-to-t from-background via-background/90 to-transparent pointer-events-none flex justify-center">
+                  <div className="w-full max-w-2xl bg-card/95 border shadow-lg rounded-xl p-4 pointer-events-auto backdrop-blur animate-in fade-in slide-in-from-bottom-2">
+                    {!liveSpeechSupported ? (
+                      <div className="text-xs text-muted-foreground">{t("voice.liveUnsupported")}</div>
+                    ) : null}
+                    {liveTranscript.trim() ? (
+                      <div className="space-y-3">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{t("voice.liveCaptionTitle")}</div>
+                          <div className="text-base font-medium leading-relaxed">{liveTranscript}</div>
+                        </div>
+                        {liveTranslation.trim() ? (
+                          <div className="pt-2 border-t border-border/50">
+                            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{t("voice.liveTranslationTitle")}</div>
+                            <div className="text-base font-medium leading-relaxed text-primary">{liveTranslation}</div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="max-w-screen-xl mx-auto px-3 py-2 lg:px-6 lg:py-3">
+
+                {/* Mobile: Compact Single Row Layout */}
+                <div className="flex md:hidden w-full items-end justify-between gap-2 px-1 pb-1">
+                  <div className="flex-1 min-w-0 max-w-[100px] flex flex-col gap-1">
+                    <Label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider text-center">{t("language.source")}</Label>
                     <Select
                       value={sourceLanguage.code}
                       onValueChange={(code) => {
@@ -1531,11 +1493,11 @@ export function VoiceChatInterface() {
                         if (next) setSourceLanguage(next)
                       }}
                     >
-                      <SelectTrigger className="w-full h-9">
+                      <SelectTrigger className="w-full h-10 bg-muted/30 border-muted-foreground/20 px-2">
                         <SelectValue>
-                          <span className="flex items-center gap-2 truncate">
-                            <span>{sourceLanguage.flag}</span>
-                            <span className="truncate">{sourceLanguage.name}</span>
+                          <span className="flex items-center justify-center gap-1.5">
+                            <span className="text-xl leading-none">{sourceLanguage.flag}</span>
+                            <span className="truncate text-xs font-medium">{sourceLanguage.name}</span>
                           </span>
                         </SelectValue>
                       </SelectTrigger>
@@ -1551,8 +1513,23 @@ export function VoiceChatInterface() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="min-w-0">
-                    <Label className="text-xs text-muted-foreground">{t("language.target")}</Label>
+
+                  <div className="shrink-0 relative z-20 flex flex-col items-center">
+                    <VoiceControls
+                      variant="stacked"
+                      showHint={true}
+                      className="gap-1"
+                      isProcessing={isProcessing}
+                      onRecordingComplete={handleRecordingComplete}
+                      onRecordingChange={(next) => setIsRecording(next)}
+                    />
+                    <div className="mt-1 text-[9px] text-muted-foreground/60 font-medium whitespace-nowrap">
+                      {t("language.hint", { source: sourceLanguage.name, target: targetLanguage.name })}
+                    </div>
+                  </div>
+
+                  <div className="flex-1 min-w-0 max-w-[100px] flex flex-col gap-1">
+                    <Label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider text-center">{t("language.target")}</Label>
                     <Select
                       value={targetLanguage.code}
                       onValueChange={(code) => {
@@ -1560,11 +1537,11 @@ export function VoiceChatInterface() {
                         if (next) setTargetLanguage(next)
                       }}
                     >
-                      <SelectTrigger className="w-full h-9">
+                      <SelectTrigger className="w-full h-10 bg-muted/30 border-muted-foreground/20 px-2">
                         <SelectValue>
-                          <span className="flex items-center gap-2 truncate">
-                            <span>{targetLanguage.flag}</span>
-                            <span className="truncate">{targetLanguage.name}</span>
+                          <span className="flex items-center justify-center gap-1.5">
+                            <span className="truncate text-xs font-medium">{targetLanguage.name}</span>
+                            <span className="text-xl leading-none">{targetLanguage.flag}</span>
                           </span>
                         </SelectValue>
                       </SelectTrigger>
@@ -1581,37 +1558,92 @@ export function VoiceChatInterface() {
                     </Select>
                   </div>
                 </div>
-                <div className="mt-1 text-[11px] text-muted-foreground">
-                  {t("language.hint", { source: sourceLanguage.name, target: targetLanguage.name })}
+
+                {/* Desktop: Centered Layout */}
+                <div className="hidden md:flex items-center gap-6 w-full justify-center">
+                  <div className="flex-1 flex flex-col gap-1 items-end">
+                    <div className="w-full max-w-[200px]">
+                      <div className="flex items-center justify-end gap-2 mb-1">
+                        <Label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t("language.source")}</Label>
+                      </div>
+                      <Select
+                        value={sourceLanguage.code}
+                        onValueChange={(code) => {
+                          const next = sourceLanguageOptions.find((item) => item.code === code)
+                          if (next) setSourceLanguage(next)
+                        }}
+                      >
+                        <SelectTrigger className="w-full h-11 bg-muted/30 border-muted-foreground/20 text-sm">
+                          <SelectValue>
+                            <span className="flex items-center gap-2 truncate justify-end">
+                              <span className="truncate">{sourceLanguage.name}</span>
+                              <span className="text-xl leading-none">{sourceLanguage.flag}</span>
+                            </span>
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {sourceLanguageOptions.map((lang) => (
+                            <SelectItem key={lang.code} value={lang.code}>
+                              <span className="flex items-center gap-2">
+                                <span>{lang.flag}</span>
+                                <span>{lang.name}</span>
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="shrink-0 relative z-20 flex flex-col items-center">
+                    <VoiceControls
+                      variant="stacked"
+                      showHint={true}
+                      className="gap-1"
+                      isProcessing={isProcessing}
+                      onRecordingComplete={handleRecordingComplete}
+                      onRecordingChange={(next) => setIsRecording(next)}
+                    />
+                    <div className="mt-1 w-max text-[10px] text-muted-foreground/60 font-medium whitespace-nowrap">
+                      {t("language.hint", { source: sourceLanguage.name, target: targetLanguage.name })}
+                    </div>
+                  </div>
+
+                  <div className="flex-1 flex flex-col gap-1 items-start">
+                    <div className="w-full max-w-[200px]">
+                      <div className="flex items-center justify-start gap-2 mb-1">
+                        <Label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t("language.target")}</Label>
+                      </div>
+                      <Select
+                        value={targetLanguage.code}
+                        onValueChange={(code) => {
+                          const next = SUPPORTED_LANGUAGES.find((item) => item.code === code)
+                          if (next) setTargetLanguage(next)
+                        }}
+                      >
+                        <SelectTrigger className="w-full h-11 bg-muted/30 border-muted-foreground/20 text-sm">
+                          <SelectValue>
+                            <span className="flex items-center gap-2 truncate">
+                              <span className="text-xl leading-none">{targetLanguage.flag}</span>
+                              <span>{targetLanguage.name}</span>
+                            </span>
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {SUPPORTED_LANGUAGES.map((lang) => (
+                            <SelectItem key={lang.code} value={lang.code}>
+                              <span className="flex items-center gap-2">
+                                <span>{lang.flag}</span>
+                                <span>{lang.name}</span>
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
                 </div>
               </div>
-              {(isRecording || isProcessing) && (liveTranscript.trim() || !liveSpeechSupported) ? (
-                <div className="mb-2 rounded-lg border bg-background/70 px-3 py-2">
-                  {!liveSpeechSupported ? (
-                    <div className="text-xs text-muted-foreground">{t("voice.liveUnsupported")}</div>
-                  ) : null}
-                  {liveTranscript.trim() ? (
-                    <div className="space-y-2">
-                      <div>
-                        <div className="text-[11px] text-muted-foreground">{t("voice.liveCaptionTitle")}</div>
-                        <div className="text-sm leading-relaxed">{liveTranscript}</div>
-                      </div>
-                      {liveTranslation.trim() ? (
-                        <div>
-                          <div className="text-[11px] text-muted-foreground">{t("voice.liveTranslationTitle")}</div>
-                          <div className="text-sm leading-relaxed">{liveTranslation}</div>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              <VoiceControls
-                variant="inline"
-                isProcessing={isProcessing}
-                onRecordingComplete={handleRecordingComplete}
-                onRecordingChange={(next) => setIsRecording(next)}
-              />
             </div>
           </div>
         </div>
