@@ -137,9 +137,22 @@ export function ChatArea({
     if (autoScrollLockedRef.current) return
     if (!shouldAutoScrollRef.current && !lastMessageIsUser) return
 
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" })
+    const scrollToBottom = () => {
+      if (messagesEndRef.current) {
+        // Use scrollIntoView with block: "end" for better alignment on mobile
+        try {
+          messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" })
+        } catch {
+          // Fallback for browsers that don't support options
+          messagesEndRef.current.scrollIntoView(false)
+        }
+      }
     }
+
+    scrollToBottom()
+    // Double scroll to ensure layout updates are caught (common fix for mobile/dynamic content)
+    const timer = setTimeout(scrollToBottom, 100)
+    return () => clearTimeout(timer)
   }, [messages.length, lastMessageId, lastMessageIsUser])
 
   useEffect(() => {

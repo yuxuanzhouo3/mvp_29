@@ -23,7 +23,8 @@ function getTencentErrorMessage(value: unknown): string | null {
 function toTencentAsrEngine(language: string): string | undefined {
   const normalized = String(language || "").trim().toLowerCase()
   if (normalized === "中文" || normalized === "汉语" || normalized === "普通话") return "16k_zh"
-  if (normalized === "英语" || normalized === "英文") return "16k_en"
+  // Use 16k_zh for English as well to support Chinese/English mixed input and prevent garbage output when user speaks Chinese with English setting
+  if (normalized === "英语" || normalized === "英文") return "16k_zh"
   if (normalized === "日语" || normalized === "日文") return "16k_ja"
   if (normalized === "韩语" || normalized === "韩文") return "16k_ko"
   if (normalized === "法语" || normalized === "法文") return "16k_fr"
@@ -32,7 +33,8 @@ function toTencentAsrEngine(language: string): string | undefined {
   if (normalized === "葡萄牙语" || normalized === "葡萄牙文") return "16k_pt"
 
   if (normalized.startsWith("zh")) return "16k_zh"
-  if (normalized.startsWith("en")) return "16k_en"
+  // Use 16k_zh for English as well
+  if (normalized.startsWith("en")) return "16k_zh"
   if (normalized.startsWith("ja")) return "16k_ja"
   if (normalized.startsWith("ko")) return "16k_ko"
   if (normalized.startsWith("fr")) return "16k_fr"

@@ -92,7 +92,7 @@ export async function POST(req: Request) {
     const prompt =
       targetLabel === "Chinese"
         ? `Translate the following text from ${sourceLabel} to Simplified Chinese. Return only the translated text. Do NOT include pinyin, romanization, notes, explanations, quotes, labels, or parentheses. Preserve proper nouns and names; if a name has no common Chinese translation, keep it in the original script.\n\nText: ${text}`
-        : `Translate the following text from ${sourceLabel} to ${targetLabel}. Only return the translated text in the target language, nothing else.\n\nText: ${text}`
+        : `Translate the following text from ${sourceLabel} to ${targetLabel}. Only return the translated text in the target language, nothing else. Do NOT include pinyin, romanization, transliteration, pronunciation guides, or explanations. If the source is Chinese, translate the meaning (e.g., 你好 -> Hello).\n\nText: ${text}`
 
     let modelId = ""
     let translatedText = ""
