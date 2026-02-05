@@ -379,8 +379,8 @@ export function VoiceChatInterface() {
           const rms = Math.sqrt(sumSq / dataArray.length)
 
           // Threshold: 0.01 is roughly silence. 0.02 is quiet noise.
-          // Let's use 0.02 as threshold for "activity"
-          if (rms > 0.02) {
+          // Increased to 0.04 to filter out background chatter and non-speaker noise
+          if (rms > 0.04) {
             globalVoiceActivityRef.current = Date.now()
           }
         }, 100)
@@ -406,7 +406,23 @@ export function VoiceChatInterface() {
 
   const ensureLocalMicStream = useCallback(async () => {
     if (callStreamRef.current) return callStreamRef.current
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const constraints = {
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        // Chrome-specific constraints for enhanced voice isolation
+        googEchoCancellation: true,
+        googExperimentalEchoCancellation: true,
+        googAutoGainControl: true,
+        googExperimentalAutoGainControl: true,
+        googNoiseSuppression: true,
+        googExperimentalNoiseSuppression: true,
+        googHighpassFilter: true,
+        googAudioMirroring: false,
+      } as MediaTrackConstraints
+    }
+    const stream = await navigator.mediaDevices.getUserMedia(constraints)
     callStreamRef.current = stream
     return stream
   }, [])
@@ -422,7 +438,23 @@ export function VoiceChatInterface() {
       let stream: MediaStream | null = callStatusRef.current === "active" ? callStreamRef.current : null
       let owned = false
       if (!stream) {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        const constraints = {
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            // Chrome-specific constraints
+            googEchoCancellation: true,
+            googExperimentalEchoCancellation: true,
+            googAutoGainControl: true,
+            googExperimentalAutoGainControl: true,
+            googNoiseSuppression: true,
+            googExperimentalNoiseSuppression: true,
+            googHighpassFilter: true,
+            googAudioMirroring: false,
+          } as MediaTrackConstraints
+        }
+        stream = await navigator.mediaDevices.getUserMedia(constraints)
         owned = true
       }
       fallbackStreamRef.current = stream
@@ -480,7 +512,14 @@ export function VoiceChatInterface() {
               } else if (prev.startsWith(normalized)) {
                 nextText = prev
               } else {
-                nextText = `${prev} ${normalized}`.trim()
+                const lang = sourceLanguageRef.current === "auto"
+                  ? detectLanguageFromText(normalized)
+                  : sourceLanguageRef.current
+                const isCJK = lang.toLowerCase().startsWith("zh") ||
+                  lang.toLowerCase().startsWith("ja") ||
+                  lang.toLowerCase().startsWith("ko")
+                const separator = isCJK ? "" : " "
+                nextText = `${prev}${separator}${normalized}`.trim()
               }
             }
             fallbackLastTextRef.current = nextText

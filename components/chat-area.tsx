@@ -133,19 +133,22 @@ export function ChatArea({
     viewport.scrollTo({ top: 0, behavior: "smooth" })
   }
 
+  const lastMessageContent = lastMessage ? lastMessage.originalText + lastMessage.translatedText : ""
+
   useEffect(() => {
     if (autoScrollLockedRef.current) return
     if (!shouldAutoScrollRef.current && !lastMessageIsUser) return
 
     const scrollToBottom = () => {
       if (messagesEndRef.current) {
-        // Use scrollIntoView with block: "end" for better alignment on mobile
-        try {
-          messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" })
-        } catch {
-          // Fallback for browsers that don't support options
-          messagesEndRef.current.scrollIntoView(false)
-        }
+        // Use requestAnimationFrame to ensure layout is ready
+        requestAnimationFrame(() => {
+          try {
+            messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+          } catch {
+            messagesEndRef.current?.scrollIntoView(false)
+          }
+        })
       }
     }
 
@@ -153,7 +156,7 @@ export function ChatArea({
     // Double scroll to ensure layout updates are caught (common fix for mobile/dynamic content)
     const timer = setTimeout(scrollToBottom, 100)
     return () => clearTimeout(timer)
-  }, [messages.length, lastMessageId, lastMessageIsUser])
+  }, [messages.length, lastMessageId, lastMessageIsUser, lastMessageContent])
 
   useEffect(() => {
     if (autoPlay && messages.length > 0) {
