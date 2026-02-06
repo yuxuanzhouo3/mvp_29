@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { motion, useScroll, useTransform } from "framer-motion"
-import { Mic, Smartphone, Zap, Shield, Sparkles, ArrowRight, CheckCircle2, QrCode, Globe, Radio, MessageSquare, Share2, Wifi, PhoneOff } from "lucide-react"
+import { Mic, Smartphone, Zap, Shield, Sparkles, ArrowRight, CheckCircle2, QrCode, Globe, Radio, MessageSquare, Share2, Wifi, PhoneOff, Mail } from "lucide-react"
 import Link from "next/link"
 import Image from "next/image"
 import { useRef } from "react"
@@ -310,6 +310,23 @@ export default function WeeklyUpdatePage() {
             <Button variant="outline" size="lg" className="text-lg px-8 py-6 rounded-full w-full sm:w-auto">
               查看详细文档
             </Button>
+          </div>
+
+          <div className="mt-20 pt-10 border-t border-border/40 max-w-3xl mx-auto">
+            <p className="text-xl font-semibold text-foreground mb-3">
+              多端生态同步构建中，期待您的声音
+            </p>
+            <p className="text-muted-foreground mb-8 leading-relaxed max-w-2xl mx-auto">
+              MornSpeaker 正在 Web、小程序及移动端全线发力。当前处于早期快速迭代阶段，<br className="hidden md:inline" />
+              您的每一个建议与反馈，都是我们打磨极致体验的核心动力。
+            </p>
+            <div className="inline-flex items-center justify-center gap-3 px-6 py-3 bg-background rounded-full border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 group">
+              <span className="text-muted-foreground group-hover:text-foreground transition-colors">反馈邮箱：</span>
+              <a href="mailto:604638945@qq.com" className="text-primary font-semibold hover:underline flex items-center gap-2">
+                <Mail className="w-4 h-4" />
+                604638945@qq.com
+              </a>
+            </div>
           </div>
         </div>
       </section>

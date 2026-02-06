@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -9,6 +9,13 @@ import { Label } from "@/components/ui/label"
 import { useToast } from "@/hooks/use-toast"
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser"
 import { useAuth } from "@/components/auth-provider"
+import { WechatMiniProgramDetector } from "@/components/wechat-mini-program-detector"
+import {
+  clearWxMpLoginParams,
+  exchangeCodeForToken,
+  parseWxMpLoginCallback,
+  requestWxMpLogin,
+} from "@/lib/wechat-mp"
 
 export default function LoginPage() {
   const router = useRouter()
@@ -22,6 +29,7 @@ export default function LoginPage() {
   const [view, setView] = useState<"form" | "verify">("form")
   const [emailCode, setEmailCode] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isInMiniProgram, setIsInMiniProgram] = useState(false)
   const [verificationId, setVerificationId] = useState<string | null>(null)
   const [verificationEmail, setVerificationEmail] = useState<string | null>(null)
   const verificationRequestLock = useRef(false)
@@ -213,6 +221,56 @@ export default function LoginPage() {
     }
     void run()
   }, [isTencent, router, toast])
+
+  const handleMpLoginCallback = useCallback(async () => {
+    if (!isTencent) return
+    const callback = parseWxMpLoginCallback()
+    if (!callback) return
+    setIsSubmitting(true)
+    try {
+      if (callback.token && callback.openid) {
+        const res = await fetch("/api/auth/mp-callback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token: callback.token,
+            openid: callback.openid,
+            expiresIn: callback.expiresIn,
+            nickName: callback.nickName,
+            avatarUrl: callback.avatarUrl,
+          }),
+        })
+        if (res.ok) {
+          clearWxMpLoginParams()
+          window.location.assign("/")
+          return
+        }
+      }
+      if (callback.code) {
+        const result = await exchangeCodeForToken(
+          callback.code,
+          callback.nickName,
+          callback.avatarUrl
+        )
+        if (result.success) {
+          clearWxMpLoginParams()
+          window.location.assign("/")
+          return
+        }
+      }
+      clearWxMpLoginParams()
+    } catch (error) {
+      clearWxMpLoginParams()
+      const message = extractTencentAuthError(error)
+      toast({ title: "微信登录失败", description: message, variant: "destructive" })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }, [isTencent, toast])
+
+  useEffect(() => {
+    void handleMpLoginCallback()
+  }, [handleMpLoginCallback])
 
   const formatAuthError = (e: unknown): { title: string; description: string; variant?: "destructive"; nextView?: "verify" } => {
     const message =
@@ -614,6 +672,24 @@ export default function LoginPage() {
     }
   }
 
+  const handleWechatLoginClick = async () => {
+    if (isInMiniProgram) {
+      setIsSubmitting(true)
+      try {
+        const ok = await requestWxMpLogin()
+        if (!ok) {
+          throw new Error("未检测到微信小程序环境")
+        }
+      } catch (e) {
+        const message = extractTencentAuthError(e)
+        toast({ title: "微信登录失败", description: message, variant: "destructive" })
+        setIsSubmitting(false)
+      }
+      return
+    }
+    await handleWechatLogin()
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
@@ -628,6 +704,7 @@ export default function LoginPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
+          <WechatMiniProgramDetector onDetect={setIsInMiniProgram} />
           <div className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">邮箱</Label>
@@ -711,7 +788,7 @@ export default function LoginPage() {
                   </div>
                 </div>
 
-                <Button variant="outline" className="w-full bg-transparent" onClick={handleWechatLogin} disabled={isSubmitting}>
+                <Button variant="outline" className="w-full bg-transparent" onClick={handleWechatLoginClick} disabled={isSubmitting}>
                   使用微信登录
                 </Button>
               </>
