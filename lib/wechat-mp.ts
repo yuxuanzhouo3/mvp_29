@@ -31,7 +31,7 @@ export function getWxMiniProgram(): WxMiniProgram | null {
   return mp
 }
 
-export function waitForWxSDK(timeout = 3000): Promise<WxMiniProgram | null> {
+export function waitForWxSDK(timeout = 8000): Promise<WxMiniProgram | null> {
   return new Promise((resolve) => {
     const mp = getWxMiniProgram()
     if (mp) {
@@ -52,6 +52,34 @@ export function waitForWxSDK(timeout = 3000): Promise<WxMiniProgram | null> {
       }
     }, 100)
   })
+}
+
+export async function ensureMiniProgramEnv(timeout = 8000): Promise<boolean> {
+  if (typeof window === "undefined") return false
+  if (isMiniProgram()) {
+    const mp = await waitForWxSDK(timeout)
+    if (mp && typeof mp.getEnv === "function") {
+      return await new Promise<boolean>((resolve) => {
+        try {
+          mp.getEnv?.((res: { miniprogram: boolean }) => resolve(Boolean(res?.miniprogram)))
+        } catch {
+          resolve(true)
+        }
+      })
+    }
+    return Boolean(mp)
+  }
+  const mp = await waitForWxSDK(timeout)
+  if (mp && typeof mp.getEnv === "function") {
+    return await new Promise<boolean>((resolve) => {
+      try {
+        mp.getEnv?.((res: { miniprogram: boolean }) => resolve(Boolean(res?.miniprogram)))
+      } catch {
+        resolve(false)
+      }
+    })
+  }
+  return false
 }
 
 export interface WxMpLoginCallback {
@@ -110,20 +138,35 @@ export function clearWxMpLoginParams(): void {
 export async function requestWxMpLogin(returnUrl?: string): Promise<boolean> {
   const mp = await waitForWxSDK()
   if (!mp) {
-    return false
+    const ensured = await ensureMiniProgramEnv()
+    if (!ensured) return false
   }
   const currentUrl = returnUrl || window.location.href
-  if (typeof mp.navigateTo === "function") {
+  if (mp && typeof mp.navigateTo === "function") {
     const loginUrl = `/pages/webshell/login?returnUrl=${encodeURIComponent(currentUrl)}`
     mp.navigateTo({ url: loginUrl })
     return true
   }
-  if (typeof mp.postMessage === "function") {
-    mp.postMessage({ data: { type: "REQUEST_WX_LOGIN", returnUrl: currentUrl } })
-    if (typeof mp.navigateBack === "function") {
-      mp.navigateBack({ delta: 1 })
+  if (mp && typeof mp.postMessage === "function") {
+    try {
+      mp.postMessage({ data: { type: "REQUEST_WX_LOGIN", returnUrl: currentUrl } })
+      if (typeof mp.navigateBack === "function") {
+        mp.navigateBack({ delta: 1 })
+      }
+      return true
+    } catch {
+      // fall through
     }
-    return true
+  }
+  // Fallback: if environment strongly indicates miniprogram, try redirect to known login page path
+  if (isMiniProgram()) {
+    try {
+      const loginUrl = `/pages/webshell/login?returnUrl=${encodeURIComponent(currentUrl)}`
+      window.location.replace(loginUrl)
+      return true
+    } catch {
+      return false
+    }
   }
   return false
 }
