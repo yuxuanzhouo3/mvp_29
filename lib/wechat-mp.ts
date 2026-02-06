@@ -19,6 +19,10 @@ export function isMiniProgram(): boolean {
   if (window.__wxjs_environment === "miniprogram") return true
   const params = new URLSearchParams(window.location.search)
   if (params.get("_wxjs_environment") === "miniprogram") return true
+  const fromParam = params.get("from")
+  if (fromParam === "miniprogram" || fromParam === "miniProgram" || fromParam === "mp") return true
+  const mpFlag = params.get("mp")
+  if (mpFlag === "1" || mpFlag === "true") return true
   return false
 }
 

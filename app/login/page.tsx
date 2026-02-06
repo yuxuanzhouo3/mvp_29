@@ -14,6 +14,7 @@ import {
   clearWxMpLoginParams,
   ensureMiniProgramEnv,
   exchangeCodeForToken,
+  isMiniProgram,
   parseWxMpLoginCallback,
   requestWxMpLogin,
 } from "@/lib/wechat-mp"
@@ -674,8 +675,23 @@ export default function LoginPage() {
   }
 
   const handleWechatLoginClick = async () => {
-    const isMp = await ensureMiniProgramEnv()
-    if (isMp || isInMiniProgram) {
+    const isMpFlag = isMiniProgram() || isInMiniProgram
+    if (isMpFlag) {
+      setIsSubmitting(true)
+      try {
+        const ok = await requestWxMpLogin()
+        if (!ok) {
+          throw new Error("未检测到微信小程序环境")
+        }
+      } catch (e) {
+        const message = extractTencentAuthError(e)
+        toast({ title: "微信登录失败", description: message, variant: "destructive" })
+        setIsSubmitting(false)
+      }
+      return
+    }
+    const ensured = await ensureMiniProgramEnv()
+    if (ensured) {
       setIsSubmitting(true)
       try {
         const ok = await requestWxMpLogin()

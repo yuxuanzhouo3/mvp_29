@@ -3,10 +3,12 @@ import { GeistSans } from 'geist/font/sans'
 import { GeistMono } from 'geist/font/mono'
 import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
+import Script from "next/script"
 import { AuthProvider } from "@/components/auth-provider"
 import { I18nProvider } from "@/components/i18n-provider"
 import { Toaster as SonnerToaster } from "@/components/ui/sonner"
 import { Toaster } from "@/components/ui/toaster"
+import { WechatMiniProgramAuthHandler } from "@/components/wechat-mini-program-auth-handler"
 
 export const metadata: Metadata = {
   title: 'MornSpeaker',
@@ -24,10 +26,12 @@ export default function RootLayout({
       <body className={`font-sans ${GeistSans.variable} ${GeistMono.variable}`} suppressHydrationWarning>
         <AuthProvider>
           <I18nProvider>{children}</I18nProvider>
+          <WechatMiniProgramAuthHandler />
         </AuthProvider>
         <Toaster />
         <SonnerToaster />
         {process.env.NEXT_PUBLIC_DEPLOY_TARGET !== 'tencent' && <Analytics />}
+        <Script src="https://res.wx.qq.com/open/js/jweixin-1.6.0.js" strategy="afterInteractive" />
       </body>
     </html>
   )
