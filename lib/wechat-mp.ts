@@ -143,9 +143,18 @@ export async function requestWxMpLogin(returnUrl?: string): Promise<boolean> {
   }
   const currentUrl = returnUrl || window.location.href
   if (mp && typeof mp.navigateTo === "function") {
-    const loginUrl = `/pages/webshell/login?returnUrl=${encodeURIComponent(currentUrl)}`
-    mp.navigateTo({ url: loginUrl })
-    return true
+    try {
+      const loginUrl1 = `/pages/webshell/login?returnUrl=${encodeURIComponent(currentUrl)}`
+      mp.navigateTo({ url: loginUrl1 })
+      return true
+    } catch {
+      try {
+        const loginUrl2 = `/pages/webshell/webshell?action=login&returnUrl=${encodeURIComponent(currentUrl)}`
+        mp.navigateTo({ url: loginUrl2 })
+        return true
+      } catch {
+      }
+    }
   }
   if (mp && typeof mp.postMessage === "function") {
     try {
@@ -156,16 +165,6 @@ export async function requestWxMpLogin(returnUrl?: string): Promise<boolean> {
       return true
     } catch {
       // fall through
-    }
-  }
-  // Fallback: if environment strongly indicates miniprogram, try redirect to known login page path
-  if (isMiniProgram()) {
-    try {
-      const loginUrl = `/pages/webshell/login?returnUrl=${encodeURIComponent(currentUrl)}`
-      window.location.replace(loginUrl)
-      return true
-    } catch {
-      return false
     }
   }
   return false

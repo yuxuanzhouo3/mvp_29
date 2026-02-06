@@ -12,6 +12,7 @@ import { useAuth } from "@/components/auth-provider"
 import { WechatMiniProgramDetector } from "@/components/wechat-mini-program-detector"
 import {
   clearWxMpLoginParams,
+  ensureMiniProgramEnv,
   exchangeCodeForToken,
   parseWxMpLoginCallback,
   requestWxMpLogin,
@@ -673,7 +674,8 @@ export default function LoginPage() {
   }
 
   const handleWechatLoginClick = async () => {
-    if (isInMiniProgram) {
+    const isMp = await ensureMiniProgramEnv()
+    if (isMp || isInMiniProgram) {
       setIsSubmitting(true)
       try {
         const ok = await requestWxMpLogin()
