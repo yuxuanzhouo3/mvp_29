@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog"
 import { Download, Upload, Smartphone, Monitor, Globe, HardDrive, Package } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { Switch } from "@/components/ui/switch"
 
 type ReleaseInfo = {
   version?: string
@@ -41,6 +42,8 @@ export function ReleaseUploadForm({
   const [file, setFile] = useState<File | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isOpen, setIsOpen] = useState(false)
+  const [useLink, setUseLink] = useState(false)
+  const [link, setLink] = useState("")
   const router = useRouter()
 
   const formattedSize = useMemo(() => {
@@ -70,16 +73,27 @@ export function ReleaseUploadForm({
       toast.error("请填写版本号")
       return
     }
-    if (!file) {
-      toast.error("请上传安装包或文件")
-      return
+    if (useLink) {
+      if (!link.trim()) {
+        toast.error("请填写外部下载链接")
+        return
+      }
+    } else {
+      if (!file) {
+        toast.error("请上传安装包或文件")
+        return
+      }
     }
     setIsSubmitting(true)
     try {
       const formData = new FormData()
       formData.set("platform", platform)
       formData.set("version", version.trim())
-      formData.set("file", file)
+      if (useLink) {
+        formData.set("link", link.trim())
+      } else if (file) {
+        formData.set("file", file)
+      }
 
       const res = await fetch("/api/releases/upload", {
         method: "POST",
@@ -92,6 +106,7 @@ export function ReleaseUploadForm({
       toast.success("版本已更新")
       setFile(null)
       setVersion("")
+      setLink("")
       setIsOpen(false)
       router.refresh()
     } catch (error) {
@@ -191,18 +206,41 @@ export function ReleaseUploadForm({
                   required
                 />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor={`${platform}-file`}>安装包文件</Label>
-                <Input
-                  id={`${platform}-file`}
-                  type="file"
-                  accept={accept}
-                  onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-                  required
-                />
-                <p className="text-xs text-muted-foreground">
-                  支持格式: {accept?.split(',').join(', ') || '所有文件'}
-                </p>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="cursor-pointer">使用外部链接</Label>
+                  <Switch
+                    checked={useLink}
+                    onCheckedChange={(v) => setUseLink(Boolean(v))}
+                    aria-label="使用外部链接"
+                  />
+                </div>
+                {useLink ? (
+                  <div className="space-y-2">
+                    <Label htmlFor={`${platform}-link`}>下载链接</Label>
+                    <Input
+                      id={`${platform}-link`}
+                      placeholder="https://example.com/file.apk 或云存储直链"
+                      value={link}
+                      onChange={(e) => setLink(e.target.value)}
+                      required
+                    />
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <Label htmlFor={`${platform}-file`}>安装包文件</Label>
+                    <Input
+                      id={`${platform}-file`}
+                      type="file"
+                      accept={accept}
+                      onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                      required
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      支持格式: {accept?.split(',').join(', ') || '所有文件'}
+                    </p>
+                  </div>
+                )}
               </div>
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setIsOpen(false)} disabled={isSubmitting}>

@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
       if (link) return NextResponse.redirect(link)
       const fileId = typeof value === "object" && value && "fileId" in value ? String((value as any).fileId || "") : ""
       if (!fileId) return NextResponse.json({ error: "尚未配置下载链接" }, { status: 404 })
-      const envId = process.env.TENCENT_ENV_ID
+      const envId = process.env.TENCENT_ENV_ID || process.env.NEXT_PUBLIC_TENCENT_ENV_ID
       const secretId = process.env.TENCENT_SECRET_ID
       const secretKey = process.env.TENCENT_SECRET_KEY
       const app = tcb.init(

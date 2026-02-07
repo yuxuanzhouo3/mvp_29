@@ -69,12 +69,26 @@ export async function POST(request: Request) {
     const filename = file.name || `${platform}-${version}`
 
     if (isTencentTarget()) {
-      const envId = process.env.TENCENT_ENV_ID
-      const secretId = process.env.TENCENT_SECRET_ID
-      const secretKey = process.env.TENCENT_SECRET_KEY
-      const app = tcb.init(
-        secretId && secretKey ? { env: envId, secretId, secretKey } : { env: envId }
-      )
+      const envId = process.env.TENCENT_ENV_ID || process.env.NEXT_PUBLIC_TENCENT_ENV_ID
+      const secretId =
+        process.env.TENCENT_SECRET_ID ||
+        process.env.TENCENTCLOUD_SECRETID ||
+        process.env.TENCENT_CLOUD_SECRETID
+      const secretKey =
+        process.env.TENCENT_SECRET_KEY ||
+        process.env.TENCENTCLOUD_SECRETKEY ||
+        process.env.TENCENT_CLOUD_SECRETKEY
+      const hasCloudRuntime = Boolean(process.env.TENCENTCLOUD_RUNENV || process.env.TENCENT_APP_ID)
+      if (!envId) {
+        return NextResponse.json({ success: false, error: "缺少 TENCENT_ENV_ID" }, { status: 500 })
+      }
+      if (!hasCloudRuntime && (!secretId || !secretKey)) {
+        return NextResponse.json(
+          { success: false, error: "缺少 CloudBase 密钥，请配置 TENCENT_SECRET_ID / TENCENT_SECRET_KEY" },
+          { status: 500 },
+        )
+      }
+      const app = tcb.init(secretId && secretKey ? { env: envId, secretId, secretKey } : { env: envId })
       const arrayBuffer = await file.arrayBuffer()
       const buffer = Buffer.from(arrayBuffer)
       const cloudPath = `releases/${platform}/${version}/${filename}`
