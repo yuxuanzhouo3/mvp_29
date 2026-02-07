@@ -3,6 +3,8 @@ import { getPrisma } from "@/lib/prisma"
 import { createClient } from "@supabase/supabase-js"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
+export const dynamic = "force-dynamic"
+
 const isTencentTarget = () => {
   const publicTarget = String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "").trim().toLowerCase()
   const privateTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
