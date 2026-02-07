@@ -2,6 +2,7 @@ import {
   LayoutDashboard,
   MessageSquare,
   Megaphone,
+  Package,
   Users,
 } from "lucide-react"
 
@@ -38,6 +39,11 @@ const items = [
     title: "广告管理",
     url: "/admin/ads",
     icon: Megaphone,
+  },
+  {
+    title: "版本管理",
+    url: "/admin/apk",
+    icon: Package,
   },
 ]
 

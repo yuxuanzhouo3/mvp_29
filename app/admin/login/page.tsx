@@ -16,6 +16,17 @@ export default function AdminLoginPage() {
   const [isLoading, setIsLoading] = useState(false)
   const router = useRouter()
   const { user } = useAuth()
+  const isTencent = process.env.NEXT_PUBLIC_DEPLOY_TARGET === "tencent"
+  const tencentLogoutKey = "tencent:auth:logged_out"
+
+  const clearTencentLoggedOut = () => {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.removeItem(tencentLogoutKey)
+    } catch {
+      return
+    }
+  }
 
   // 如果已登录，重定向到后台
   if (user) {
@@ -28,15 +39,32 @@ export default function AdminLoginPage() {
     setIsLoading(true)
 
     try {
+      const trimmedEmail = email.trim()
+      if (isTencent) {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: trimmedEmail, password }),
+        })
+        const data = await res.json()
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || "登录失败")
+        }
+        clearTencentLoggedOut()
+        toast.success("登录成功")
+        window.location.assign("/admin")
+        return
+      }
+
       const supabase = getSupabaseBrowserClient()
       const { error } = await supabase.auth.signInWithPassword({
-        email,
+        email: trimmedEmail,
         password,
       })
 
-    if (error) {
-      throw error
-    }
+      if (error) {
+        throw error
+      }
 
       toast.success("登录成功")
       router.push("/admin")

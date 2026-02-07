@@ -9,11 +9,38 @@ import { Button } from "@/components/ui/button"
 import { useRouter } from "next/navigation"
 import { useAuth } from "@/components/auth-provider"
 import { motion } from "framer-motion"
+import { useEffect, useMemo, useState } from "react"
 
 export function LandingPage({ showFull = true }: { showFull?: boolean }) {
   const { t } = useI18n()
   const router = useRouter()
   const { user, signOut } = useAuth()
+  const [clientHideFull, setClientHideFull] = useState(false)
+  const finalShowFull = useMemo(() => showFull && !clientHideFull, [showFull, clientHideFull])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const ua = navigator.userAgent.toLowerCase()
+    const isApp =
+      !!(window as any).median_status_checker ||
+      !!(window as any).JSBridge ||
+      ua.includes("median") ||
+      ua.includes("gonative")
+    const params = new URLSearchParams(window.location.search)
+    const envParam = params.get("_wxjs_environment")
+    const fromParam = params.get("from")
+    const mpParam = params.get("mp")
+    const isMiniProgram =
+      ua.includes("miniprogram") ||
+      envParam === "miniprogram" ||
+      fromParam === "miniprogram" ||
+      fromParam === "miniProgram" ||
+      fromParam === "mp" ||
+      mpParam === "1" ||
+      mpParam === "true" ||
+      (window as any).__wxjs_environment === "miniprogram"
+    if (isApp || isMiniProgram) setClientHideFull(true)
+  }, [])
 
   const handleLogout = async () => {
     await signOut()
@@ -44,6 +71,27 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
     }
   };
 
+  const [androidRelease, setAndroidRelease] = useState<{
+    available: boolean
+    version?: string
+    downloadUrl?: string
+  } | null>(null)
+
+  useEffect(() => {
+    fetch(`/api/releases?platform=android`)
+      .then((res) => res.json())
+      .then((data) => setAndroidRelease(data))
+      .catch(() => setAndroidRelease({ available: false }))
+  }, [])
+
+  const androidItem = androidRelease?.available
+    ? {
+      label: androidRelease.version ? `Android v${androidRelease.version}` : "Android",
+      href: androidRelease.downloadUrl || `/api/downloads?platform=android`,
+      comingSoon: false,
+    }
+    : { label: "Android", href: "#", comingSoon: true }
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Hero Section */}
@@ -69,7 +117,7 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
         </div>
 
         <div className="flex-1 flex flex-col justify-center items-center p-4 container mx-auto max-w-4xl">
-          <motion.h1 
+          <motion.h1
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
@@ -78,7 +126,7 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
             {t("app.name")}
           </motion.h1>
 
-          <motion.div 
+          <motion.div
             variants={staggerContainer}
             initial="hidden"
             animate="show"
@@ -132,8 +180,8 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
           </motion.div>
         </div>
 
-        {showFull && (
-          <motion.div 
+        {finalShowFull && (
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 1, duration: 1 }}
@@ -145,11 +193,11 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
         )}
       </section>
 
-      {showFull && (
+      {finalShowFull && (
         <>
           <section id="intro-section" className="py-24 bg-muted/30 relative overflow-hidden">
             <div className="container mx-auto px-4 relative z-10">
-              <motion.div 
+              <motion.div
                 {...fadeInUp}
                 className="text-center max-w-3xl mx-auto mb-16"
               >
@@ -160,19 +208,19 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
               </motion.div>
 
               <div className="grid md:grid-cols-3 gap-8">
-                <FeatureCard 
+                <FeatureCard
                   icon={<Zap className="w-10 h-10 text-yellow-500" />}
                   title={t("landing.features.realtime")}
                   desc={t("landing.features.realtimeDesc")}
                   delay={0.1}
                 />
-                <FeatureCard 
+                <FeatureCard
                   icon={<Layout className="w-10 h-10 text-blue-500" />}
                   title={t("landing.features.crossPlatform")}
                   desc={t("landing.features.crossPlatformDesc")}
                   delay={0.2}
                 />
-                <FeatureCard 
+                <FeatureCard
                   icon={<Shield className="w-10 h-10 text-green-500" />}
                   title={t("landing.features.secure")}
                   desc={t("landing.features.secureDesc")}
@@ -190,18 +238,18 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
               </motion.div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-5xl mx-auto">
-                <DownloadCard 
+                <DownloadCard
                   title={t("landing.download.mobile")}
                   icon={<Smartphone className="w-12 h-12" />}
                   items={[
-                    { label: "Android", href: "#", comingSoon: true },
+                    androidItem,
                     { label: "iOS", href: "#", comingSoon: true },
                     { label: "HarmonyOS", href: "#", comingSoon: true }
                   ]}
                   delay={0.1}
                 />
 
-                <DownloadCard 
+                <DownloadCard
                   title={t("landing.download.desktop")}
                   icon={<Monitor className="w-12 h-12" />}
                   items={[
@@ -212,7 +260,7 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
                   delay={0.2}
                 />
 
-                <DownloadCard 
+                <DownloadCard
                   title={t("landing.download.extension")}
                   icon={<Globe className="w-12 h-12" />}
                   items={[
@@ -224,7 +272,7 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
               </div>
             </div>
           </section>
-          
+
           <footer className="py-8 border-t text-center text-sm text-muted-foreground">
             <p>&copy; {new Date().getFullYear()} MornSpeaker. All rights reserved.</p>
           </footer>
@@ -236,7 +284,7 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
 
 function FeatureCard({ icon, title, desc, delay }: { icon: React.ReactNode, title: string, desc: string, delay: number }) {
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, y: 30 }}
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true }}
@@ -254,9 +302,9 @@ function FeatureCard({ icon, title, desc, delay }: { icon: React.ReactNode, titl
 
 function DownloadCard({ title, icon, items, delay }: { title: string, icon: React.ReactNode, items: { label: string, href: string, comingSoon?: boolean }[], delay: number }) {
   const { t } = useI18n()
-  
+
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, scale: 0.95 }}
       whileInView={{ opacity: 1, scale: 1 }}
       viewport={{ once: true }}
@@ -267,7 +315,7 @@ function DownloadCard({ title, icon, items, delay }: { title: string, icon: Reac
         {icon}
       </div>
       <h3 className="text-2xl font-semibold mb-8">{title}</h3>
-      
+
       <div className="w-full space-y-3">
         {items.map((item, idx) => (
           <Button key={idx} variant="outline" className="w-full justify-between group" asChild={!item.comingSoon} disabled={item.comingSoon}>
