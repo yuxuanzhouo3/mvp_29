@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation"
 import { useAuth } from "@/components/auth-provider"
 import { motion } from "framer-motion"
 
-export function LandingPage() {
+export function LandingPage({ showFull = true }: { showFull?: boolean }) {
   const { t } = useI18n()
   const router = useRouter()
   const { user, signOut } = useAuth()
@@ -132,104 +132,104 @@ export function LandingPage() {
           </motion.div>
         </div>
 
-        <motion.div 
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 1, duration: 1 }}
-          className="absolute bottom-8 left-1/2 -translate-x-1/2 cursor-pointer animate-bounce"
-          onClick={scrollToNextSection}
-        >
-          <ChevronDown className="w-8 h-8 text-muted-foreground/50 hover:text-primary transition-colors" />
-        </motion.div>
-      </section>
-
-      {/* Product Intro Section */}
-      <section id="intro-section" className="py-24 bg-muted/30 relative overflow-hidden">
-        <div className="container mx-auto px-4 relative z-10">
+        {showFull && (
           <motion.div 
-            {...fadeInUp}
-            className="text-center max-w-3xl mx-auto mb-16"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 1, duration: 1 }}
+            className="absolute bottom-8 left-1/2 -translate-x-1/2 cursor-pointer animate-bounce"
+            onClick={scrollToNextSection}
           >
-            <h2 className="text-3xl md:text-4xl font-bold mb-6">{t("landing.product.title")}</h2>
-            <p className="text-xl text-muted-foreground leading-relaxed">
-              {t("landing.product.desc")}
-            </p>
+            <ChevronDown className="w-8 h-8 text-muted-foreground/50 hover:text-primary transition-colors" />
           </motion.div>
-
-          <div className="grid md:grid-cols-3 gap-8">
-            <FeatureCard 
-              icon={<Zap className="w-10 h-10 text-yellow-500" />}
-              title={t("landing.features.realtime")}
-              desc={t("landing.features.realtimeDesc")}
-              delay={0.1}
-            />
-            <FeatureCard 
-              icon={<Layout className="w-10 h-10 text-blue-500" />}
-              title={t("landing.features.crossPlatform")}
-              desc={t("landing.features.crossPlatformDesc")}
-              delay={0.2}
-            />
-            <FeatureCard 
-              icon={<Shield className="w-10 h-10 text-green-500" />}
-              title={t("landing.features.secure")}
-              desc={t("landing.features.secureDesc")}
-              delay={0.3}
-            />
-          </div>
-        </div>
+        )}
       </section>
 
-      {/* Download Section */}
-      <section className="py-24 bg-background">
-        <div className="container mx-auto px-4 text-center">
-          <motion.div {...fadeInUp} className="mb-16">
-            <h2 className="text-3xl md:text-4xl font-bold mb-4">{t("landing.download.title")}</h2>
-            <p className="text-lg text-muted-foreground">{t("landing.download.subtitle")}</p>
-          </motion.div>
+      {showFull && (
+        <>
+          <section id="intro-section" className="py-24 bg-muted/30 relative overflow-hidden">
+            <div className="container mx-auto px-4 relative z-10">
+              <motion.div 
+                {...fadeInUp}
+                className="text-center max-w-3xl mx-auto mb-16"
+              >
+                <h2 className="text-3xl md:text-4xl font-bold mb-6">{t("landing.product.title")}</h2>
+                <p className="text-xl text-muted-foreground leading-relaxed">
+                  {t("landing.product.desc")}
+                </p>
+              </motion.div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-5xl mx-auto">
-            {/* Mobile */}
-            <DownloadCard 
-              title={t("landing.download.mobile")}
-              icon={<Smartphone className="w-12 h-12" />}
-              items={[
-                { label: "Android", href: "#", comingSoon: true },
-                { label: "iOS", href: "#", comingSoon: true },
-                { label: "HarmonyOS", href: "#", comingSoon: true }
-              ]}
-              delay={0.1}
-            />
+              <div className="grid md:grid-cols-3 gap-8">
+                <FeatureCard 
+                  icon={<Zap className="w-10 h-10 text-yellow-500" />}
+                  title={t("landing.features.realtime")}
+                  desc={t("landing.features.realtimeDesc")}
+                  delay={0.1}
+                />
+                <FeatureCard 
+                  icon={<Layout className="w-10 h-10 text-blue-500" />}
+                  title={t("landing.features.crossPlatform")}
+                  desc={t("landing.features.crossPlatformDesc")}
+                  delay={0.2}
+                />
+                <FeatureCard 
+                  icon={<Shield className="w-10 h-10 text-green-500" />}
+                  title={t("landing.features.secure")}
+                  desc={t("landing.features.secureDesc")}
+                  delay={0.3}
+                />
+              </div>
+            </div>
+          </section>
 
-            {/* Desktop */}
-            <DownloadCard 
-              title={t("landing.download.desktop")}
-              icon={<Monitor className="w-12 h-12" />}
-              items={[
-                { label: "Windows", href: "#", comingSoon: true },
-                { label: "macOS", href: "#", comingSoon: true },
-                { label: "Linux", href: "#", comingSoon: true }
-              ]}
-              delay={0.2}
-            />
+          <section className="py-24 bg-background">
+            <div className="container mx-auto px-4 text-center">
+              <motion.div {...fadeInUp} className="mb-16">
+                <h2 className="text-3xl md:text-4xl font-bold mb-4">{t("landing.download.title")}</h2>
+                <p className="text-lg text-muted-foreground">{t("landing.download.subtitle")}</p>
+              </motion.div>
 
-            {/* Extension */}
-            <DownloadCard 
-              title={t("landing.download.extension")}
-              icon={<Globe className="w-12 h-12" />}
-              items={[
-                { label: "Chrome / Edge", href: "#", comingSoon: true },
-                { label: "Firefox", href: "#", comingSoon: true }
-              ]}
-              delay={0.3}
-            />
-          </div>
-        </div>
-      </section>
-      
-      {/* Footer */}
-      <footer className="py-8 border-t text-center text-sm text-muted-foreground">
-        <p>&copy; {new Date().getFullYear()} MornSpeaker. All rights reserved.</p>
-      </footer>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-5xl mx-auto">
+                <DownloadCard 
+                  title={t("landing.download.mobile")}
+                  icon={<Smartphone className="w-12 h-12" />}
+                  items={[
+                    { label: "Android", href: "#", comingSoon: true },
+                    { label: "iOS", href: "#", comingSoon: true },
+                    { label: "HarmonyOS", href: "#", comingSoon: true }
+                  ]}
+                  delay={0.1}
+                />
+
+                <DownloadCard 
+                  title={t("landing.download.desktop")}
+                  icon={<Monitor className="w-12 h-12" />}
+                  items={[
+                    { label: "Windows", href: "#", comingSoon: true },
+                    { label: "macOS", href: "#", comingSoon: true },
+                    { label: "Linux", href: "#", comingSoon: true }
+                  ]}
+                  delay={0.2}
+                />
+
+                <DownloadCard 
+                  title={t("landing.download.extension")}
+                  icon={<Globe className="w-12 h-12" />}
+                  items={[
+                    { label: "Chrome / Edge", href: "#", comingSoon: true },
+                    { label: "Firefox", href: "#", comingSoon: true }
+                  ]}
+                  delay={0.3}
+                />
+              </div>
+            </div>
+          </section>
+          
+          <footer className="py-8 border-t text-center text-sm text-muted-foreground">
+            <p>&copy; {new Date().getFullYear()} MornSpeaker. All rights reserved.</p>
+          </footer>
+        </>
+      )}
     </div>
   )
 }
