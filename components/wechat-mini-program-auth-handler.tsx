@@ -14,6 +14,15 @@ export function WechatMiniProgramAuthHandler() {
   const router = useRouter()
   const processingRef = useRef(false)
   const isTencent = process.env.NEXT_PUBLIC_DEPLOY_TARGET === "tencent"
+  const tencentLogoutKey = "tencent:auth:logged_out"
+  const clearTencentLoggedOut = () => {
+    if (!isTencent) return
+    try {
+      window.localStorage.removeItem(tencentLogoutKey)
+    } catch {
+      return
+    }
+  }
 
   useEffect(() => {
     if (!isTencent) return
@@ -38,6 +47,7 @@ export function WechatMiniProgramAuthHandler() {
             }),
           })
           if (res.ok) {
+            clearTencentLoggedOut()
             clearWxMpLoginParams()
             // Force a hard reload to ensure auth state is picked up
             window.location.reload()
@@ -51,6 +61,7 @@ export function WechatMiniProgramAuthHandler() {
             callback.avatarUrl
           )
           if (result.success) {
+            clearTencentLoggedOut()
             clearWxMpLoginParams()
             window.location.reload()
             return

@@ -137,7 +137,7 @@ export async function POST(request: NextRequest) {
     const hasProfile = Boolean(userName)
     const expiresIn = 7 * 24 * 60 * 60
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       exists: true,
       hasProfile,
@@ -147,6 +147,14 @@ export async function POST(request: NextRequest) {
       userName,
       userAvatar: null,
     })
+    response.cookies.set("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: expiresIn,
+      path: "/",
+    })
+    return response
   } catch (error) {
     if (isTencentTarget() && process.env.NODE_ENV !== "production" && isMariaDbConnectionError(error)) {
       return NextResponse.json({ success: false, error: "Database unavailable" })

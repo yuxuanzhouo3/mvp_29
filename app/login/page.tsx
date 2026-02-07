@@ -243,6 +243,7 @@ export default function LoginPage() {
           }),
         })
         if (res.ok) {
+          clearTencentLoggedOut()
           clearWxMpLoginParams()
           window.location.assign("/")
           return
@@ -255,6 +256,7 @@ export default function LoginPage() {
           callback.avatarUrl
         )
         if (result.success) {
+          clearTencentLoggedOut()
           clearWxMpLoginParams()
           window.location.assign("/")
           return
