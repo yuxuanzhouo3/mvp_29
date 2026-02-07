@@ -58,8 +58,8 @@ export async function POST(req: Request) {
       const pool = await getMariaPool()
 
       // Try to find user by openid
-      const queryResult = await pool.query("SELECT * FROM `User` WHERE _openid = ? LIMIT 1", [openid])
-      const rows = Array.isArray(queryResult) ? queryResult[0] : []
+      // mariadb returns an array of rows directly, NOT [rows, fields]
+      const rows = await pool.query("SELECT * FROM `User` WHERE _openid = ? LIMIT 1", [openid])
       const existingUsers = Array.isArray(rows) ? rows : []
 
       if (existingUsers.length > 0) {
@@ -72,19 +72,33 @@ export async function POST(req: Request) {
         const fakeEmail = `wechat_${openid}@mornspeaker.local`
 
         // Ensure email doesn't exist (edge case)
-        const emailQueryResult = await pool.query("SELECT id FROM `User` WHERE email = ? LIMIT 1", [fakeEmail])
-        const emailRows = Array.isArray(emailQueryResult) ? emailQueryResult[0] : []
+        const emailRows = await pool.query("SELECT id FROM `User` WHERE email = ? LIMIT 1", [fakeEmail])
         const existingEmails = Array.isArray(emailRows) ? emailRows : []
 
         if (existingEmails.length > 0) {
           // Should not happen if openid is unique, but just in case
           user = existingEmails[0]
         } else {
-          await pool.query(
-            "INSERT INTO `User` (id, email, name, password, _openid, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, NOW(), NOW())",
-            [id, fakeEmail, nickname, "wechat_login_no_password", openid]
-          )
-          user = { id, email: fakeEmail, name: nickname }
+          try {
+            await pool.query(
+              "INSERT INTO `User` (id, email, name, password, _openid, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, NOW(), NOW())",
+              [id, fakeEmail, nickname, "wechat_login_no_password", openid]
+            )
+            user = { id, email: fakeEmail, name: nickname }
+          } catch (error: any) {
+            // Handle Duplicate entry error (e.g. race condition or previous query failed silently)
+            if (error.code === 'ER_DUP_ENTRY' || error.message?.includes('Duplicate entry')) {
+              console.log("Duplicate entry detected, trying to fetch user by email...")
+              const retryRows = await pool.query("SELECT * FROM `User` WHERE email = ? LIMIT 1", [fakeEmail])
+              if (Array.isArray(retryRows) && retryRows.length > 0) {
+                user = retryRows[0] as any
+              } else {
+                throw error // Rethrow if still can't find user
+              }
+            } else {
+              throw error
+            }
+          }
         }
       }
     } else {
