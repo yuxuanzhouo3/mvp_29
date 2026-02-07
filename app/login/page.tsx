@@ -48,6 +48,13 @@ export default function LoginPage() {
     process.env.NEXT_PUBLIC_WECHAT_PROVIDER_ID ||
     (wechatScope === "snsapi_login" ? "wx_open" : "wx_public")
   ).trim() || (wechatScope === "snsapi_login" ? "wx_open" : "wx_public")
+  const isMedianApp =
+    typeof window !== "undefined" &&
+    (!!(window as any).median_status_checker ||
+      !!(window as any).JSBridge ||
+      navigator.userAgent.toLowerCase().includes("median") ||
+      navigator.userAgent.toLowerCase().includes("gonative"))
+  const canUseWechatLogin = isTencent && (isMiniProgram() || isInMiniProgram || isMedianApp)
   const clearTencentLoggedOut = () => {
     if (!isTencent) return
     try {
@@ -677,14 +684,8 @@ export default function LoginPage() {
   }
 
   const handleWechatLoginClick = async () => {
+    if (!canUseWechatLogin) return
     // Android App Detection (Median/GoNative)
-    const isMedianApp =
-      typeof window !== "undefined" &&
-      (!!(window as any).median_status_checker ||
-        !!(window as any).JSBridge ||
-        navigator.userAgent.toLowerCase().includes("median") ||
-        navigator.userAgent.toLowerCase().includes("gonative"))
-
     if (isMedianApp) {
       setIsSubmitting(true)
       try {
@@ -749,7 +750,7 @@ export default function LoginPage() {
             {view === "verify"
               ? "输入邮箱验证码完成注册并登录"
               : isTencent
-                ? "使用邮箱或微信继续"
+                ? (canUseWechatLogin ? "使用邮箱或微信继续" : "仅使用邮箱继续")
                 : "使用邮箱或 Google 账号继续"}
           </CardDescription>
         </CardHeader>
@@ -828,20 +829,21 @@ export default function LoginPage() {
 
           {view === "form" ? (
             isTencent ? (
-              <>
-                <div className="relative">
-                  <div className="absolute inset-0 flex items-center">
-                    <span className="w-full border-t border-border" />
+              canUseWechatLogin ? (
+                <>
+                  <div className="relative">
+                    <div className="absolute inset-0 flex items-center">
+                      <span className="w-full border-t border-border" />
+                    </div>
+                    <div className="relative flex justify-center text-xs uppercase">
+                      <span className="bg-card px-2 text-muted-foreground">或</span>
+                    </div>
                   </div>
-                  <div className="relative flex justify-center text-xs uppercase">
-                    <span className="bg-card px-2 text-muted-foreground">或</span>
-                  </div>
-                </div>
-
-                <Button variant="outline" className="w-full bg-transparent" onClick={handleWechatLoginClick} disabled={isSubmitting}>
-                  使用微信登录
-                </Button>
-              </>
+                  <Button variant="outline" className="w-full bg-transparent" onClick={handleWechatLoginClick} disabled={isSubmitting}>
+                    使用微信登录
+                  </Button>
+                </>
+              ) : null
             ) : (
               <>
                 <div className="relative">
@@ -852,7 +854,6 @@ export default function LoginPage() {
                     <span className="bg-card px-2 text-muted-foreground">或</span>
                   </div>
                 </div>
-
                 <Button variant="outline" className="w-full bg-transparent" onClick={handleGoogleLogin} disabled={isSubmitting}>
                   使用 Google 登录
                 </Button>
