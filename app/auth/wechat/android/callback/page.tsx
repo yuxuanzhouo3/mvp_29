@@ -11,6 +11,16 @@ function CallbackContent() {
   const { toast } = useToast()
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading")
   const processedRef = useRef(false)
+  const isTencent = process.env.NEXT_PUBLIC_DEPLOY_TARGET === "tencent"
+  const tencentLogoutKey = "tencent:auth:logged_out"
+  const clearTencentLoggedOut = () => {
+    if (!isTencent) return
+    try {
+      window.localStorage.removeItem(tencentLogoutKey)
+    } catch {
+      return
+    }
+  }
 
   useEffect(() => {
     const code = searchParams.get("code")
@@ -50,6 +60,7 @@ function CallbackContent() {
           title: "登录成功",
           description: "欢迎回来",
         })
+        clearTencentLoggedOut()
 
         // 跳转到首页
         // 使用 window.location.href 强制刷新页面，确保 auth-provider 重新获取用户信息
