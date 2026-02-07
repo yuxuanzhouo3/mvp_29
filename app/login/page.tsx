@@ -675,6 +675,36 @@ export default function LoginPage() {
   }
 
   const handleWechatLoginClick = async () => {
+    // Android App Detection (Median/GoNative)
+    const isMedianApp =
+      typeof window !== "undefined" &&
+      (!!(window as any).median_status_checker ||
+        !!(window as any).JSBridge ||
+        navigator.userAgent.toLowerCase().includes("median") ||
+        navigator.userAgent.toLowerCase().includes("gonative"))
+
+    if (isMedianApp) {
+      setIsSubmitting(true)
+      try {
+        const appId = "wxd2f4ea51e526a132"
+        const redirectUri = `${window.location.origin}/auth/wechat/android/callback`
+        const state = `login_${Math.random().toString(36).slice(2, 10)}`
+        const scope = "snsapi_userinfo"
+
+        const authUrl = `https://open.weixin.qq.com/connect/oauth2/authorize?appid=${appId}&redirect_uri=${encodeURIComponent(
+          redirectUri
+        )}&response_type=code&scope=${scope}&state=${state}#wechat_redirect`
+
+        window.location.href = authUrl
+        return
+      } catch (e) {
+        const message = extractTencentAuthError(e)
+        toast({ title: "微信登录失败", description: message, variant: "destructive" })
+        setIsSubmitting(false)
+        return
+      }
+    }
+
     const isMpFlag = isMiniProgram() || isInMiniProgram
     if (isMpFlag) {
       setIsSubmitting(true)
