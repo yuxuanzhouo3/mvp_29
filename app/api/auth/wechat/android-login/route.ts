@@ -26,7 +26,7 @@ export async function POST(req: Request) {
 
     // 1. Exchange code for access_token and openid
     const tokenUrl = `https://api.weixin.qq.com/sns/oauth2/access_token?appid=${ANDROID_APP_ID}&secret=${ANDROID_APP_SECRET}&code=${code}&grant_type=authorization_code`
-    
+
     const tokenRes = await fetch(tokenUrl)
     const tokenData = await tokenRes.json()
 
@@ -41,10 +41,10 @@ export async function POST(req: Request) {
     const userInfoUrl = `https://api.weixin.qq.com/sns/userinfo?access_token=${access_token}&openid=${openid}`
     const userInfoRes = await fetch(userInfoUrl)
     const userInfo = await userInfoRes.json()
-    
+
     if (userInfo.errcode) {
-       console.error("WeChat UserInfo Error:", userInfo)
-       return NextResponse.json({ error: userInfo.errmsg || "Failed to get user info" }, { status: 400 })
+      console.error("WeChat UserInfo Error:", userInfo)
+      return NextResponse.json({ error: userInfo.errmsg || "Failed to get user info" }, { status: 400 })
     }
 
     const nickname = userInfo.nickname || `WeChat User ${openid.slice(-4)}`
@@ -53,13 +53,14 @@ export async function POST(req: Request) {
 
     // 3. Find or create user in database
     let user: { id: string; email?: string | null; name?: string | null } | null = null
-    
+
     if (isTencentTarget()) {
       const pool = await getMariaPool()
-      
+
       // Try to find user by openid
-      const [rows] = await pool.query("SELECT * FROM `User` WHERE _openid = ? LIMIT 1", [openid])
-      const existingUsers = rows as any[]
+      const queryResult = await pool.query("SELECT * FROM `User` WHERE _openid = ? LIMIT 1", [openid])
+      const rows = Array.isArray(queryResult) ? queryResult[0] : []
+      const existingUsers = Array.isArray(rows) ? rows : []
 
       if (existingUsers.length > 0) {
         user = existingUsers[0]
@@ -68,64 +69,64 @@ export async function POST(req: Request) {
       } else {
         // Create new user
         const id = crypto.randomUUID()
-        // Email is unique, so we set it to null or a placeholder if allowed.
-        // Schema says email is String @unique. We need a unique email.
-        // We can generate a fake email like `wechat_{openid}@mornspeaker.local`
         const fakeEmail = `wechat_${openid}@mornspeaker.local`
-        
+
         // Ensure email doesn't exist (edge case)
-        const [emailRows] = await pool.query("SELECT id FROM `User` WHERE email = ? LIMIT 1", [fakeEmail])
-        if ((emailRows as any[]).length > 0) {
-            // Should not happen if openid is unique, but just in case
-            user = (emailRows as any[])[0]
+        const emailQueryResult = await pool.query("SELECT id FROM `User` WHERE email = ? LIMIT 1", [fakeEmail])
+        const emailRows = Array.isArray(emailQueryResult) ? emailQueryResult[0] : []
+        const existingEmails = Array.isArray(emailRows) ? emailRows : []
+
+        if (existingEmails.length > 0) {
+          // Should not happen if openid is unique, but just in case
+          user = existingEmails[0]
         } else {
-            await pool.query(
+          await pool.query(
             "INSERT INTO `User` (id, email, name, password, image, _openid, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())",
             [id, fakeEmail, nickname, "wechat_login_no_password", avatar, openid]
-            )
-            user = { id, email: fakeEmail, name: nickname }
+          )
+          user = { id, email: fakeEmail, name: nickname }
         }
       }
     } else {
-        const prisma = await getPrisma()
-        
-        user = await prisma.user.findFirst({
-            where: { openid: openid }
-        })
+      const prisma = await getPrisma()
 
-        if (user) {
-            await prisma.user.update({
-                where: { id: user.id },
-                data: { name: nickname } // Schema doesn't have image field for User, but Profile does? User schema has 'image' column in SQL but Prisma schema shows only specific fields?
-                // Let's check schema.prisma again. User model has: id, email, name, password, uiLocale, createdAt, updatedAt, openid. No image.
-                // Wait, in mp-callback route, it updates name.
-                // Let's stick to name.
-            })
+      user = await prisma.user.findFirst({
+        where: { openid: openid }
+      })
+
+      if (user) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { name: nickname } // Schema doesn't have image field for User, but Profile does? User schema has 'image' column in SQL but Prisma schema shows only specific fields?
+          // Let's check schema.prisma again. User model has: id, email, name, password, uiLocale, createdAt, updatedAt, openid. No image.
+          // Wait, in mp-callback route, it updates name.
+          // Let's stick to name.
+        })
+      } else {
+        const fakeEmail = `wechat_${openid}@mornspeaker.local`
+        // Check if fakeEmail exists
+        const existingEmailUser = await prisma.user.findUnique({ where: { email: fakeEmail } })
+        if (existingEmailUser) {
+          user = existingEmailUser
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { openid: openid, name: nickname }
+          })
         } else {
-            const fakeEmail = `wechat_${openid}@mornspeaker.local`
-            // Check if fakeEmail exists
-            const existingEmailUser = await prisma.user.findUnique({ where: { email: fakeEmail } })
-            if (existingEmailUser) {
-                user = existingEmailUser
-                 await prisma.user.update({
-                    where: { id: user.id },
-                    data: { openid: openid, name: nickname }
-                })
-            } else {
-                user = await prisma.user.create({
-                    data: {
-                        email: fakeEmail,
-                        name: nickname,
-                        password: "wechat_login_no_password",
-                        openid: openid
-                    }
-                })
+          user = await prisma.user.create({
+            data: {
+              email: fakeEmail,
+              name: nickname,
+              password: "wechat_login_no_password",
+              openid: openid
             }
+          })
         }
+      }
     }
 
     if (!user) {
-         return NextResponse.json({ error: "Failed to create/find user" }, { status: 500 })
+      return NextResponse.json({ error: "Failed to create/find user" }, { status: 500 })
     }
 
     // 4. Generate JWT
@@ -136,9 +137,9 @@ export async function POST(req: Request) {
       name: user.name,
       openid: openid
     }
-    
+
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" })
-    
+
     const res = NextResponse.json({ success: true, user })
     res.cookies.set("token", token, {
       httpOnly: true,
@@ -147,7 +148,7 @@ export async function POST(req: Request) {
       maxAge: 60 * 60 * 24 * 7,
       path: "/",
     })
-    
+
     return res
 
   } catch (error) {
