@@ -65,7 +65,7 @@ export async function POST(req: Request) {
       if (existingUsers.length > 0) {
         user = existingUsers[0]
         // Update user info
-        await pool.query("UPDATE `User` SET name = ?, image = ?, updatedAt = NOW() WHERE id = ?", [nickname, avatar, user!.id])
+        await pool.query("UPDATE `User` SET name = ?, updatedAt = NOW() WHERE id = ?", [nickname, user!.id])
       } else {
         // Create new user
         const id = crypto.randomUUID()
@@ -81,8 +81,8 @@ export async function POST(req: Request) {
           user = existingEmails[0]
         } else {
           await pool.query(
-            "INSERT INTO `User` (id, email, name, password, image, _openid, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())",
-            [id, fakeEmail, nickname, "wechat_login_no_password", avatar, openid]
+            "INSERT INTO `User` (id, email, name, password, _openid, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, NOW(), NOW())",
+            [id, fakeEmail, nickname, "wechat_login_no_password", openid]
           )
           user = { id, email: fakeEmail, name: nickname }
         }
