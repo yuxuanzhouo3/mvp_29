@@ -52,7 +52,8 @@ function CallbackContent() {
         })
 
         // 跳转到首页
-        router.replace("/")
+        // 使用 window.location.href 强制刷新页面，确保 auth-provider 重新获取用户信息
+        window.location.href = "/"
       } catch (error) {
         setStatus("error")
         toast({
