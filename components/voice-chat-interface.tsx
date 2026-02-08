@@ -2648,30 +2648,43 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           }
         }}
       >
-        <DialogContent className="sm:max-w-[420px]">
-          <DialogHeader>
-            <DialogTitle>{t("call.incomingTitle")}</DialogTitle>
-            <DialogDescription>
-              {callPeer ? t("call.incomingDesc", { name: callPeer.name }) : ""}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="flex gap-2 sm:gap-2 w-full">
-            <Button
-              variant="outline"
+        <DialogContent className="sm:max-w-[380px] p-8">
+          <div className="flex flex-col items-center gap-6">
+            <div className="relative">
+              <div className="absolute inset-0 bg-primary/20 rounded-full animate-ping opacity-75" />
+              <Avatar className="w-24 h-24 border-4 border-background shadow-xl relative bg-background">
+                <AvatarImage src={users.find(u => u.id === callPeer?.id)?.avatar} />
+                <AvatarFallback className="text-2xl bg-primary/10 text-primary">
+                  {callPeer?.name?.slice(0, 1) || "?"}
+                </AvatarFallback>
+              </Avatar>
+            </div>
+            
+            <div className="text-center space-y-2">
+              <DialogTitle className="text-2xl font-semibold">{t("call.incomingTitle")}</DialogTitle>
+              <DialogDescription className="text-base text-muted-foreground">
+                {callPeer ? t("call.incomingDesc", { name: callPeer.name }) : ""}
+              </DialogDescription>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 w-full mt-6">
+            <Button 
+              variant="outline" 
               onClick={handleRejectCall}
-              className="flex-1 border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground"
+              className="h-14 rounded-full border-destructive/50 text-destructive hover:bg-destructive hover:text-destructive-foreground hover:border-destructive transition-all"
             >
-              <PhoneOff className="w-4 h-4 mr-2" />
+              <PhoneOff className="w-5 h-5 mr-2" />
               {t("call.reject")}
             </Button>
-            <Button
+            <Button 
               onClick={handleAcceptCall}
-              className="flex-1 bg-green-600 hover:bg-green-700 text-white border-green-600"
+              className="h-14 rounded-full shadow-lg shadow-primary/30 transition-all hover:scale-105 active:scale-95 text-base font-medium"
             >
-              <Phone className="w-4 h-4 mr-2" />
+              <Phone className="w-5 h-5 mr-2 fill-current" />
               {t("call.accept")}
             </Button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
