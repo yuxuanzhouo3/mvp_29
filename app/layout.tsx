@@ -14,6 +14,10 @@ export const metadata: Metadata = {
   title: 'MornSpeaker',
   description: 'MornSpeaker - AI 驱动的实时语音翻译应用',
   generator: 'v0.app',
+  icons: {
+    icon: '/icon.png',
+    apple: '/icon.png',
+  },
 }
 
 export default function RootLayout({

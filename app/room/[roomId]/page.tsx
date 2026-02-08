@@ -1,8 +1,8 @@
 import { VoiceChatInterface } from "@/components/voice-chat-interface"
 import { AuthRequired } from "@/components/auth-required"
 
-export default function RoomPage({ searchParams }: { searchParams?: { roomId?: string } }) {
-  const initialRoomId = typeof searchParams?.roomId === "string" ? searchParams.roomId : null
+export default function RoomByIdPage({ params }: { params: { roomId: string } }) {
+  const initialRoomId = typeof params?.roomId === "string" ? params.roomId : null
   return (
     <main className="min-h-screen bg-background">
       <AuthRequired>

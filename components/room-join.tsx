@@ -25,9 +25,11 @@ type RoomJoinProps = {
     userName: string,
     options?: { joinPassword?: string; createJoinMode?: "public" | "password"; createPassword?: string },
   ) => Promise<{ success: boolean; needsPassword?: boolean }>
+  initialRoomId?: string | null
+  autoJoin?: boolean
 }
 
-export function RoomJoin({ onJoin }: RoomJoinProps) {
+export function RoomJoin({ onJoin, initialRoomId, autoJoin = false }: RoomJoinProps) {
   const { profile, user, signOut, updateProfile } = useAuth()
   const router = useRouter()
   const { toast } = useToast()
@@ -39,8 +41,15 @@ export function RoomJoin({ onJoin }: RoomJoinProps) {
   const [createJoinMode, setCreateJoinMode] = useState<"public" | "password">("public")
   const [createPassword, setCreatePassword] = useState("")
   const hasEditedUserNameRef = useRef(false)
+  const autoJoinAttemptedRef = useRef(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
   const currentLocale = UI_LOCALES.find((l) => l.value === locale) ?? UI_LOCALES[0]
+
+  useEffect(() => {
+    const nextRoomId = typeof initialRoomId === "string" ? initialRoomId.trim() : ""
+    if (!nextRoomId) return
+    setRoomId((prev) => (prev.trim() ? prev : nextRoomId))
+  }, [initialRoomId])
 
   useEffect(() => {
     if (hasEditedUserNameRef.current) return
@@ -73,6 +82,24 @@ export function RoomJoin({ onJoin }: RoomJoinProps) {
       setUserName(fallback.trim())
     }
   }, [profile?.display_name, user?.email, user?.id, user?.user_metadata, userName])
+
+  useEffect(() => {
+    if (!autoJoin) return
+    if (autoJoinAttemptedRef.current) return
+    const nextRoomId = typeof initialRoomId === "string" ? initialRoomId.trim() : ""
+    if (!nextRoomId || !userName.trim()) return
+    autoJoinAttemptedRef.current = true
+    void onJoin(nextRoomId, userName.trim(), {
+      joinPassword: joinPassword.trim() || undefined,
+    }).then((res) => {
+      if (!res.success && res.needsPassword) {
+        toast({
+          title: t("toast.passwordRequired"),
+          description: t("roomJoin.passwordPlaceholder"),
+        })
+      }
+    })
+  }, [autoJoin, initialRoomId, joinPassword, onJoin, t, toast, userName])
 
   useEffect(() => {
     // Keep password if user typed it, don't clear it on room ID change immediately or it's annoying?

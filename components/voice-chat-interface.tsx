@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react"
+import { useParams, useSearchParams } from "next/navigation"
 import { Header } from "@/components/header"
 import { ChatArea } from "@/components/chat-area"
 import { VoiceControls } from "@/components/voice-controls"
@@ -12,7 +13,7 @@ import { useToast } from "@/hooks/use-toast"
 import type { AppSettings } from "@/components/settings-dialog"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { LogOut, Copy, Check, Settings, Users, Mic, MicOff, PhoneOff } from "lucide-react"
+import { LogOut, Copy, Check, Settings, Users, Mic, MicOff, PhoneOff, Phone } from "lucide-react"
 import { useAuth } from "@/components/auth-provider"
 import { useI18n } from "@/components/i18n-provider"
 import { Sheet, SheetContent, SheetTrigger, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
@@ -87,7 +88,14 @@ type CallSignalPayload = {
   timestamp?: number
 }
 
-export function VoiceChatInterface() {
+type VoiceChatInterfaceProps = {
+  initialRoomId?: string | null
+  autoJoin?: boolean
+}
+
+export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceChatInterfaceProps) {
+  const params = useParams()
+  const searchParams = useSearchParams()
   const { profile, user, updateUserMetadata } = useAuth()
   const { t, locale } = useI18n()
   const [isInRoom, setIsInRoom] = useState(false)
@@ -122,6 +130,12 @@ export function VoiceChatInterface() {
   const [targetLanguage, setTargetLanguage] = useState<Language>(SUPPORTED_LANGUAGES[0])
   const [isRecording, setIsRecording] = useState(false)
   const [liveTranscript, setLiveTranscript] = useState("")
+  const urlRoomId = useMemo(() => {
+    const paramRoomId = typeof params?.roomId === "string" ? params.roomId.trim() : ""
+    const searchRoomId = searchParams?.get("roomId")?.trim() ?? ""
+    const propRoomId = typeof initialRoomId === "string" ? initialRoomId.trim() : ""
+    return paramRoomId || searchRoomId || propRoomId || ""
+  }, [initialRoomId, params, searchParams])
   const [liveTranslation, setLiveTranslation] = useState("")
   const [liveTranscriptLines, setLiveTranscriptLines] = useState<string[]>([])
   const [liveTranslationLines, setLiveTranslationLines] = useState<string[]>([])
@@ -2180,7 +2194,7 @@ export function VoiceChatInterface() {
   )
 
   if (!isInRoom) {
-    return <RoomJoin onJoin={handleJoinRoom} />
+    return <RoomJoin onJoin={handleJoinRoom} initialRoomId={urlRoomId} autoJoin={autoJoin || Boolean(urlRoomId)} />
   }
 
   return (
@@ -2641,11 +2655,22 @@ export function VoiceChatInterface() {
               {callPeer ? t("call.incomingDesc", { name: callPeer.name }) : ""}
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="gap-2 sm:gap-2">
-            <Button variant="secondary" onClick={handleRejectCall}>
-              {t("call.rejectedTitle")}
+          <DialogFooter className="flex gap-2 sm:gap-2 w-full">
+            <Button
+              variant="outline"
+              onClick={handleRejectCall}
+              className="flex-1 border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground"
+            >
+              <PhoneOff className="w-4 h-4 mr-2" />
+              {t("call.reject")}
             </Button>
-            <Button onClick={handleAcceptCall}>{t("call.acceptedTitle")}</Button>
+            <Button
+              onClick={handleAcceptCall}
+              className="flex-1 bg-green-600 hover:bg-green-700 text-white border-green-600"
+            >
+              <Phone className="w-4 h-4 mr-2" />
+              {t("call.accept")}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
