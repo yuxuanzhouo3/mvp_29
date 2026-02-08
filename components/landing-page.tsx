@@ -71,26 +71,46 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
     }
   };
 
-  const [androidRelease, setAndroidRelease] = useState<{
+  const [releases, setReleases] = useState<Record<string, {
     available: boolean
     version?: string
     downloadUrl?: string
-  } | null>(null)
+  }>>({})
 
   useEffect(() => {
-    fetch(`/api/releases?platform=android`)
-      .then((res) => res.json())
-      .then((data) => setAndroidRelease(data))
-      .catch(() => setAndroidRelease({ available: false }))
+    const platforms = ["android", "ios", "harmony", "windows", "macos", "linux", "chrome", "firefox"]
+    let cancelled = false
+    Promise.all(
+      platforms.map((platform) =>
+        fetch(`/api/releases?platform=${platform}`)
+          .then((res) => res.json())
+          .then((data) => [platform, data] as const)
+          .catch(() => [platform, { available: false }] as const)
+      )
+    ).then((entries) => {
+      if (cancelled) return
+      const next: Record<string, { available: boolean; version?: string; downloadUrl?: string }> = {}
+      for (const [platform, data] of entries) {
+        next[platform] = data
+      }
+      setReleases(next)
+    })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  const androidItem = androidRelease?.available
-    ? {
-      label: androidRelease.version ? `Android v${androidRelease.version}` : "Android",
-      href: androidRelease.downloadUrl || `/api/downloads?platform=android`,
-      comingSoon: false,
+  const resolveItem = (platform: string, label: string) => {
+    const release = releases[platform]
+    if (release?.available) {
+      return {
+        label: release.version ? `${label} v${release.version}` : label,
+        href: release.downloadUrl || `/api/downloads?platform=${platform}`,
+        comingSoon: false,
+      }
     }
-    : { label: "Android", href: "#", comingSoon: true }
+    return { label, href: "#", comingSoon: true }
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -242,9 +262,9 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
                   title={t("landing.download.mobile")}
                   icon={<Smartphone className="w-12 h-12" />}
                   items={[
-                    androidItem,
-                    { label: "iOS", href: "#", comingSoon: true },
-                    { label: "HarmonyOS", href: "#", comingSoon: true }
+                    resolveItem("android", "Android"),
+                    resolveItem("ios", "iOS"),
+                    resolveItem("harmony", "HarmonyOS")
                   ]}
                   delay={0.1}
                 />
@@ -253,9 +273,9 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
                   title={t("landing.download.desktop")}
                   icon={<Monitor className="w-12 h-12" />}
                   items={[
-                    { label: "Windows", href: "#", comingSoon: true },
-                    { label: "macOS", href: "#", comingSoon: true },
-                    { label: "Linux", href: "#", comingSoon: true }
+                    resolveItem("windows", "Windows"),
+                    resolveItem("macos", "macOS"),
+                    resolveItem("linux", "Linux")
                   ]}
                   delay={0.2}
                 />
@@ -264,8 +284,8 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
                   title={t("landing.download.extension")}
                   icon={<Globe className="w-12 h-12" />}
                   items={[
-                    { label: "Chrome / Edge", href: "#", comingSoon: true },
-                    { label: "Firefox", href: "#", comingSoon: true }
+                    resolveItem("chrome", "Chrome / Edge"),
+                    resolveItem("firefox", "Firefox")
                   ]}
                   delay={0.3}
                 />
