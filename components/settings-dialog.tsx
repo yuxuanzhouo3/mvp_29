@@ -31,10 +31,21 @@ type SettingsDialogProps = {
 export type AppSettings = {
   darkMode: boolean
   autoPlayTranslations: boolean
+  onlyHearTranslatedVoice: boolean
   speechRate: number
   speechVolume: number
   saveHistory: boolean
   platform: "web" | "wechat" | "android" | "ios" | "desktop"
+}
+
+const DEFAULT_SETTINGS: AppSettings = {
+  darkMode: false,
+  autoPlayTranslations: false,
+  onlyHearTranslatedVoice: true,
+  speechRate: 0.9,
+  speechVolume: 1.0,
+  saveHistory: true,
+  platform: "web",
 }
 
 export function SettingsDialog({ onSettingsChange, roomId, roomUserId, onProfileSaved }: SettingsDialogProps) {
@@ -43,21 +54,15 @@ export function SettingsDialog({ onSettingsChange, roomId, roomUserId, onProfile
   const { t } = useI18n()
   const isTencent = process.env.NEXT_PUBLIC_DEPLOY_TARGET === "tencent"
 
-  const [settings, setSettings] = useState<AppSettings>({
-    darkMode: false,
-    autoPlayTranslations: false,
-    speechRate: 0.9,
-    speechVolume: 1.0,
-    saveHistory: true,
-    platform: "web",
-  })
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
 
   useEffect(() => {
     const savedSettings = localStorage.getItem("voicelink-settings")
     if (savedSettings) {
-      const parsed = JSON.parse(savedSettings)
-      setSettings(parsed)
-      if (parsed.darkMode) {
+      const parsed = JSON.parse(savedSettings) as Partial<AppSettings>
+      const merged = { ...DEFAULT_SETTINGS, ...parsed }
+      setSettings(merged)
+      if (merged.darkMode) {
         document.documentElement.classList.add("dark")
       }
     }
@@ -367,6 +372,17 @@ export function SettingsDialog({ onSettingsChange, roomId, roomUserId, onProfile
               id="auto-play"
               checked={settings.autoPlayTranslations}
               onCheckedChange={(checked) => updateSetting("autoPlayTranslations", checked)}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Label htmlFor="only-tts">{t("settings.onlyHearTranslatedVoice")}</Label>
+            </div>
+            <Switch
+              id="only-tts"
+              checked={settings.onlyHearTranslatedVoice}
+              onCheckedChange={(checked) => updateSetting("onlyHearTranslatedVoice", checked)}
             />
           </div>
 

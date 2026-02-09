@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useTextToSpeech } from "@/hooks/use-text-to-speech"
 
 export type Language = {
   code: string
@@ -148,6 +149,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const [settings, setSettings] = useState<AppSettings>({
     darkMode: false,
     autoPlayTranslations: false,
+    onlyHearTranslatedVoice: true,
     speechRate: 0.9,
     speechVolume: 1.0,
     saveHistory: true,
@@ -211,6 +213,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const peerConnRef = useRef<RTCPeerConnection | null>(null)
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null)
   const liveListenRef = useRef(false)
+  const { speak } = useTextToSpeech({ rate: settings.speechRate, volume: settings.speechVolume })
+  const remoteCommittedTranslationRef = useRef("")
 
   useEffect(() => {
     callStatusRef.current = callStatus
@@ -283,6 +287,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     setRemoteLiveTranslation("")
     setRemoteLiveSourceLanguage("")
     setRemoteLiveUserName("")
+    remoteCommittedTranslationRef.current = ""
     stopFallbackLive()
     callActiveRef.current = false
     callQueueRef.current = []
@@ -691,18 +696,30 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         if (!el) return
         try {
           el.srcObject = stream
-          void el.play().catch(() => { })
+          el.muted = settings.onlyHearTranslatedVoice
+          if (!settings.onlyHearTranslatedVoice) {
+            void el.play().catch(() => { })
+          }
         } catch { }
       }
-      const local = await ensureLocalMicStream()
-      for (const track of local.getTracks()) {
-        pc.addTrack(track, local)
+      if (typeof pc.addTransceiver === "function") {
+        try {
+          pc.addTransceiver("audio", { direction: settings.onlyHearTranslatedVoice ? "recvonly" : "sendrecv" })
+        } catch { }
+      }
+      if (!settings.onlyHearTranslatedVoice) {
+        const local = await ensureLocalMicStream()
+        for (const track of local.getTracks()) {
+          pc.addTrack(track, local)
+        }
+      } else {
+        await ensureLocalMicStream()
       }
       peerConnRef.current = pc
       setIsCallStreaming(true)
       return pc
     },
-    [ensureLocalMicStream, sendSignal],
+    [ensureLocalMicStream, sendSignal, settings.onlyHearTranslatedVoice],
   )
 
   const startOutgoingCall = useCallback(
@@ -1305,6 +1322,32 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       }
     }
   }, [callStatus, detectLanguageFromText, primaryOf, remoteLiveSourceLanguage, remoteLiveTranscript, targetLanguage.code])
+
+  useEffect(() => {
+    if (callStatus !== "active") return
+    if (!settings.autoPlayTranslations) return
+    const delta = getDeltaText(remoteLiveTranslation, remoteCommittedTranslationRef.current)
+    const text = delta.trim()
+    if (!text) return
+    const shouldSpeak = /[。！？.!?]$/.test(text) || text.length >= 20
+    if (!shouldSpeak) return
+    speak(text, targetLanguage.code)
+    remoteCommittedTranslationRef.current = (
+      remoteCommittedTranslationRef.current ? `${remoteCommittedTranslationRef.current} ${text}` : text
+    ).trim()
+  }, [callStatus, getDeltaText, remoteLiveTranslation, settings.autoPlayTranslations, speak, targetLanguage.code])
+
+  useEffect(() => {
+    const el = remoteAudioRef.current
+    if (!el) return
+    if (callStatus !== "active") return
+    const hasStream = Boolean(el.srcObject)
+    if (!hasStream) return
+    el.muted = settings.onlyHearTranslatedVoice
+    if (!settings.onlyHearTranslatedVoice) {
+      void el.play().catch(() => { })
+    }
+  }, [callStatus, settings.onlyHearTranslatedVoice])
 
   useEffect(() => {
     if (callStatus !== "active") return
@@ -2266,6 +2309,15 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                   </SheetContent>
                 </Sheet>
               </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setIsUsersSheetOpen(true)}
+                className="h-9 md:hidden"
+              >
+                <Phone className="w-4 h-4 mr-2" />
+                语音通话
+              </Button>
               <div className="min-w-0 flex-1">
                 <div className="text-xs text-muted-foreground hidden sm:block">{t("common.roomId")}</div>
                 <div className="font-mono text-sm font-medium truncate flex items-center gap-2">
@@ -2362,7 +2414,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
               messages={messages}
               speechRate={settings.speechRate}
               speechVolume={settings.speechVolume}
-              autoPlay={settings.autoPlayTranslations}
+              autoPlay={false}
             />
 
             <div className="shrink-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-t border-border shadow-sm">
@@ -2659,7 +2711,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                 </AvatarFallback>
               </Avatar>
             </div>
-            
+
             <div className="text-center space-y-2">
               <DialogTitle className="text-2xl font-semibold">{t("call.incomingTitle")}</DialogTitle>
               <DialogDescription className="text-base text-muted-foreground">
@@ -2669,15 +2721,15 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           </div>
 
           <div className="grid grid-cols-2 gap-4 w-full mt-6">
-            <Button 
-              variant="outline" 
+            <Button
+              variant="outline"
               onClick={handleRejectCall}
               className="h-14 rounded-full border-destructive/50 text-destructive hover:bg-destructive hover:text-destructive-foreground hover:border-destructive transition-all"
             >
               <PhoneOff className="w-5 h-5 mr-2" />
               {t("call.reject")}
             </Button>
-            <Button 
+            <Button
               onClick={handleAcceptCall}
               className="h-14 rounded-full shadow-lg shadow-primary/30 transition-all hover:scale-105 active:scale-95 text-base font-medium"
             >
