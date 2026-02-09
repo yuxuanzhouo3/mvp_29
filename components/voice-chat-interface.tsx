@@ -649,7 +649,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         fallbackBufferedChunksRef.current.push(new Float32Array(input))
         fallbackBufferedSamplesRef.current += input.length
         const sampleRate = event.inputBuffer.sampleRate
-        const targetSeconds = 1.0 // Unified to 1.0s for lower latency
+        const targetSeconds = 0.6 // Reduced from 1.0s to 0.6s for lower latency
         const targetSamples = Math.floor(sampleRate * targetSeconds)
         if (fallbackBufferedSamplesRef.current >= targetSamples) {
           const total = fallbackBufferedSamplesRef.current
@@ -668,7 +668,10 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             sumSq += merged[i] * merged[i]
           }
           const rms = Math.sqrt(sumSq / merged.length)
-          const silenceThreshold = isMobile ? 0.005 : 0.01 // Lowered threshold slightly as 0.01 might be too high for some mics
+          // Threshold adjustments:
+          // Mobile: 0.005 (sensitive enough for phone mic, but filters pure silence)
+          // Desktop: 0.02 (higher threshold to filter PC fan noise/keyboard clicks)
+          const silenceThreshold = isMobile ? 0.005 : 0.02
 
           if (rms < silenceThreshold) return
 
