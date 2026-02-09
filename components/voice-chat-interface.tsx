@@ -479,6 +479,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     sourceLanguageRef.current = sourceLanguage.code
   }, [sourceLanguage.code])
 
+  const [asrMode, setAsrMode] = useState<"off" | "http" | "websocket">("off")
+
   // Tencent Cloud Real-time ASR WebSocket Client
   const tencentWsRef = useRef<WebSocket | null>(null)
   const audioBufferRef = useRef<Int16Array[]>([])
@@ -488,12 +490,18 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const lastReceivedTextRef = useRef<string>("")
 
   const connectTencentAsr = useCallback(async () => {
-    if (tencentWsRef.current?.readyState === WebSocket.OPEN) return tencentWsRef.current
+    if (tencentWsRef.current?.readyState === WebSocket.OPEN) {
+      setAsrMode("websocket")
+      return tencentWsRef.current
+    }
 
     try {
       // 1. Get signature from backend
       const res = await fetch("/api/transcribe/stream?action=get_signature", { method: "POST" })
-      if (!res.ok) throw new Error("Failed to get signature")
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.error || "Failed to get signature")
+      }
       const { signature, secretid, timestamp, expired, nonce, engine_model_type, voice_id, voice_format, needvad, appid } = await res.json()
 
       // 2. Construct WebSocket URL
@@ -514,6 +522,11 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
 
       ws.onopen = () => {
         console.log("Tencent ASR WebSocket connected")
+        setAsrMode("websocket")
+        toast({
+          title: "实时语音连接成功",
+          description: "已切换至腾讯云流式语音识别模式 (WebSocket)",
+        })
         // 连接建立后，如果缓存有数据，立即发送（解决首字丢失）
         if (audioBufferLenRef.current > 0) {
           // 合并缓存
@@ -576,14 +589,25 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
 
       ws.onerror = (e) => {
         console.error("Tencent ASR WebSocket error", e)
+        setAsrMode("http") // Fallback
+      }
+
+      ws.onclose = () => {
+        setAsrMode("http") // Fallback on close
       }
 
       return ws
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to connect to Tencent ASR", e)
+      setAsrMode("http")
+      toast({
+        title: "实时语音连接失败",
+        description: e.message || "无法连接到腾讯云 ASR，将降级使用 HTTP 模式",
+        variant: "destructive",
+      })
       return null
     }
-  }, [])
+  }, [toast])
 
   const startFallbackLive = useCallback(async () => {
     if (fallbackRecorderRef.current || fallbackProcessorRef.current) return
@@ -759,46 +783,32 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         if (!liveListenRef.current) return
         const input = event.inputBuffer.getChannelData(0)
 
-        // If WebSocket is connected, stream audio data directly
-        if (tencentWsRef.current?.readyState === WebSocket.OPEN) {
-          // Convert Float32 to Int16 PCM (required by Tencent ASR)
-          // Downsample from 48k to 16k if necessary (simple decimation)
-          // Ideally we should use a proper resampler, but for now simple skipping works for demo
-          // But wait, the input is likely 44.1k or 48k. Tencent expects 16k.
-          // We need to resample on the fly.
+        // Resample to 16k for Tencent ASR / Backend
+        const targetSampleRate = 16000
+        const sourceSampleRate = event.inputBuffer.sampleRate
+        const ratio = sourceSampleRate / targetSampleRate
+        const newLength = Math.round(input.length / ratio)
+        const pcmData = new Int16Array(newLength)
 
-          // Simple resampling: just pick every Nth sample? No, that causes aliasing.
-          // Let's reuse the resampleTo16k but in smaller chunks?
-          // Or just send it to WS and let Tencent handle it? Tencent ASR v2 supports 16k only for this engine.
-
-          // For low latency, we need to process small chunks.
-          // The buffer size is 4096. 4096 / 48000 = 0.085s. This is good.
-
-          // Let's do a quick resampling here
-          const targetSampleRate = 16000;
-          const sourceSampleRate = event.inputBuffer.sampleRate;
-
-          // We can't use async inside onaudioprocess easily for streaming.
-          // Let's use a simple linear interpolation or just nearest neighbor for speed
-          const ratio = sourceSampleRate / targetSampleRate;
-          const newLength = Math.round(input.length / ratio);
-          const pcmData = new Int16Array(newLength);
-
-          for (let i = 0; i < newLength; i++) {
-            const srcIdx = Math.floor(i * ratio);
-            let val = input[srcIdx];
-            if (srcIdx + 1 < input.length) {
-              // Linear interpolation
-              const frac = (i * ratio) - srcIdx;
-              val = val * (1 - frac) + input[srcIdx + 1] * frac;
-            }
-            const s = Math.max(-1, Math.min(1, val));
-            pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        for (let i = 0; i < newLength; i++) {
+          const srcIdx = Math.floor(i * ratio)
+          let val = input[srcIdx]
+          if (srcIdx + 1 < input.length) {
+            const frac = (i * ratio) - srcIdx
+            val = val * (1 - frac) + input[srcIdx + 1] * frac
           }
+          const s = Math.max(-1, Math.min(1, val))
+          pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
+        }
 
-          // 如果 WebSocket 已连接，直接发送；否则存入缓冲
-          if (tencentWsRef.current.readyState === WebSocket.OPEN) {
-            // 如果有缓冲数据，先发送缓冲数据
+        // Check if we should use WebSocket (Open or Connecting)
+        const ws = tencentWsRef.current
+        // We use WebSocket if it exists and is not closed/closing
+        const useWs = ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+
+        if (useWs) {
+          if (ws.readyState === WebSocket.OPEN) {
+            // Send buffered data first if any
             if (audioBufferLenRef.current > 0) {
               const totalLen = audioBufferLenRef.current
               const merged = new Int16Array(totalLen)
@@ -807,29 +817,29 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                 merged.set(chunk, offset)
                 offset += chunk.length
               }
-              tencentWsRef.current.send(merged.buffer)
+              ws.send(merged.buffer)
               audioBufferRef.current = []
               audioBufferLenRef.current = 0
             }
-            tencentWsRef.current.send(pcmData.buffer)
+            // Send current chunk
+            ws.send(pcmData.buffer)
           } else {
-            // 存入缓冲
+            // Buffer while connecting
             audioBufferRef.current.push(pcmData)
             audioBufferLenRef.current += pcmData.length
-            // 限制缓冲区大小，防止内存溢出 (例如保留最近 5 秒)
-            // 16000 * 5 = 80000 samples
+            // Buffer limit (approx 5 seconds)
             if (audioBufferLenRef.current > 80000) {
               const removeCount = audioBufferRef.current[0].length
               audioBufferRef.current.shift()
               audioBufferLenRef.current -= removeCount
             }
           }
-
         } else {
+          // HTTP Fallback logic (Whisper or Tencent HTTP)
           fallbackBufferedChunksRef.current.push(new Float32Array(input))
           fallbackBufferedSamplesRef.current += input.length
           const sampleRate = event.inputBuffer.sampleRate
-          const targetSeconds = 0.6 // Reduced from 1.0s to 0.6s for lower latency
+          const targetSeconds = 0.6
           const targetSamples = Math.floor(sampleRate * targetSeconds)
           if (fallbackBufferedSamplesRef.current >= targetSamples) {
             const total = fallbackBufferedSamplesRef.current
@@ -842,16 +852,13 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             fallbackBufferedChunksRef.current = []
             fallbackBufferedSamplesRef.current = 0
 
-            // Calculate RMS to detect silence
             let sumSq = 0
             for (let i = 0; i < merged.length; i++) {
               sumSq += merged[i] * merged[i]
             }
             const rms = Math.sqrt(sumSq / merged.length)
-            // Threshold adjustments:
-            // Mobile: 0.005 (sensitive enough for phone mic, but filters pure silence)
-            // Desktop: 0.02 (higher threshold to filter PC fan noise/keyboard clicks)
             const silenceThreshold = isMobile ? 0.005 : 0.02
+
 
             if (rms < silenceThreshold) return
 
@@ -1199,6 +1206,17 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       return
     }
 
+    // Priority: Tencent Cloud Streaming ASR > Browser Native ASR
+    // Since the user explicitly configured Tencent Cloud ASR, we prioritize the WebSocket implementation (startFallbackLive)
+    // over the browser's native SpeechRecognition.
+    // This ensures we use the high-quality, continuous streaming recognition from Tencent.
+
+    // Check if we should use native SpeechRecognition (only if NOT using Tencent)
+    // For now, we force fallback (Tencent/HTTP) to ensure Tencent ASR is used if available.
+    // If you want to use browser native ASR when Tencent is not configured, we would need a flag.
+    // Given the user's request, we skip SpeechRecognition.
+
+    /*
     const w = window as unknown as {
       SpeechRecognition?: SpeechRecognitionConstructor
       webkitSpeechRecognition?: SpeechRecognitionConstructor
@@ -1213,83 +1231,18 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     stopFallbackLive()
 
     const recognition = new SpeechRecognition()
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.lang = sourceLanguage.code === "auto" ? uiLocaleToLanguageCode() : sourceLanguage.code
+    // ... (rest of SpeechRecognition setup)
+    return () => { ... }
+    */
 
-    recognition.onresult = (event) => {
-      // Check if listening is still enabled
-      if (!liveListenRef.current) return
-
-      // Check if we have recent voice activity
-      // If VAD detected silence recently, ignore this result to prevent hallucinations
-      if (globalVoiceActivityRef.current !== undefined) {
-        // Check if the last voice activity was recent (within 1s)
-        // Note: globalVoiceActivityRef is updated by the AudioContext analyzer
-        // If we haven't implemented that yet, this check will be skipped
-        const now = Date.now()
-        const lastActive = globalVoiceActivityRef.current
-        // If last active time is too old (> 2000ms), consider it silence/hallucination
-        if (now - lastActive > 2000) {
-          console.log("[v0] Ignored ASR result due to silence (VAD)")
-          return
-        }
-      }
-
-      try {
-        const results = event.results
-        if (!results || typeof results.length !== "number") return
-        let text = ""
-        for (let i = 0; i < results.length; i += 1) {
-          const item = results[i]
-          const alt = item?.[0]
-          const part = typeof alt?.transcript === "string" ? alt.transcript : ""
-          if (part) text += part
-        }
-        const trimmed = text.trim()
-        if (trimmed) setLiveTranscript(trimmed)
-      } catch { }
-    }
-
-    recognition.onerror = () => {
-      if (speechRecognitionRef.current === recognition) {
-        try {
-          recognition.onresult = null
-          recognition.onerror = null
-          recognition.onend = null
-          recognition.stop()
-        } catch { }
-        speechRecognitionRef.current = null
-      }
-      void startFallbackLive()
-    }
-
-    recognition.onend = () => {
-      if (!liveListenRef.current) return
-      try {
-        recognition.start()
-      } catch { }
-    }
-
-    speechRecognitionRef.current = recognition
-    try {
-      recognition.start()
-    } catch {
-      if (speechRecognitionRef.current === recognition) {
-        speechRecognitionRef.current = null
-      }
-      void startFallbackLive()
-    }
+    // Force use of our custom streaming implementation (Tencent ASR)
+    void startFallbackLive()
+    setLiveSpeechSupported(true) // We support it via fallback
 
     return () => {
-      try {
-        recognition.onresult = null
-        recognition.onerror = null
-        recognition.onend = null
-        recognition.stop()
-      } catch { }
-      if (speechRecognitionRef.current === recognition) speechRecognitionRef.current = null
+      stopFallbackLive()
     }
+
   }, [isInRoom, shouldLiveListen, sourceLanguage.code, startFallbackLive, stopFallbackLive, uiLocaleToLanguageCode])
 
   useEffect(() => {
