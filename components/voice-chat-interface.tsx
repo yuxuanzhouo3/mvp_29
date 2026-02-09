@@ -516,7 +516,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         `voice_id=${voice_id}&` +
         `voice_format=${voice_format}&` +
         `needvad=${needvad}&` +
-        `vad_silence_time=2000&` + // 显式增加前端 URL 参数 (2s)
+        `vad_silence_time=3000&` +
         `signature=${encodeURIComponent(signature)}`
 
       const ws = new WebSocket(wsUrl)
@@ -629,7 +629,6 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const startFallbackLive = useCallback(async () => {
     if (fallbackRecorderRef.current || fallbackProcessorRef.current) return
     try {
-      // Connect to Tencent ASR in parallel (don't await) to allow immediate audio buffering
       void connectTencentAsr()
 
       let stream: MediaStream | null = callStatusRef.current === "active" ? callStreamRef.current : null
@@ -718,12 +717,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                 const isCJK = lang.toLowerCase().startsWith("zh") ||
                   lang.toLowerCase().startsWith("ja") ||
                   lang.toLowerCase().startsWith("ko")
-                if (isMobile) {
-                  nextText = normalized
-                } else {
-                  const separator = isCJK ? "" : " "
-                  nextText = `${prev}${separator}${normalized}`.trim()
-                }
+                const separator = isCJK ? "" : " "
+                nextText = `${prev}${separator}${normalized}`.trim()
               }
             }
             const langForTrim = sourceLanguageRef.current === "auto"
@@ -1566,20 +1561,19 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     const text = delta.trim()
     if (!text) return
     if (text === remoteLastSpokenTextRef.current) return
-    if (isMobile && ttsSupported && !ttsUnlockedRef.current) {
+    if (ttsSupported && !ttsUnlockedRef.current) {
       pendingTtsRef.current = { text, lang: targetLanguage.code }
       if (!ttsUnlockPromptedRef.current) {
         ttsUnlockPromptedRef.current = true
         toast({
           title: "点击屏幕启用语音播放",
-          description: "移动端需要先触摸页面，系统才允许播放语音。",
+          description: "需要先点击页面，系统才允许播放语音。",
         })
       }
       return
     }
     const shouldSpeak = /[。！？.!?]$/.test(text) || text.length >= 20
     if (!shouldSpeak) {
-      // 桌面端和移动端都需要防抖逻辑，处理流式文本的碎片
       if (ttsDeferredTimerRef.current) {
         clearTimeout(ttsDeferredTimerRef.current)
       }

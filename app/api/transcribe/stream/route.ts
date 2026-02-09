@@ -127,7 +127,7 @@ export async function POST(req: Request) {
       'voice_id': Math.random().toString(36).substring(2),
       'voice_format': 1, // 1: wav, 8: spex
       'needvad': 1,
-      'vad_silence_time': 2000, // 增加静音检测时间，防止过早断句 (默认可能是 200-500ms)
+      'vad_silence_time': 3000,
     };
 
     const signature = getAuthSignature(params, secretKey);
