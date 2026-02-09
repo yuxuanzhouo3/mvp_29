@@ -300,6 +300,9 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     setLiveTranslationLines([])
     liveCommittedTranscriptRef.current = ""
     liveCommittedTranslationRef.current = ""
+    sessionTranscriptRef.current = ""
+    lastVoiceIdRef.current = ""
+    lastReceivedTextRef.current = ""
     if (liveAutoBreakTimerRef.current) {
       clearTimeout(liveAutoBreakTimerRef.current)
       liveAutoBreakTimerRef.current = null
@@ -476,9 +479,118 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     sourceLanguageRef.current = sourceLanguage.code
   }, [sourceLanguage.code])
 
+  // Tencent Cloud Real-time ASR WebSocket Client
+  const tencentWsRef = useRef<WebSocket | null>(null)
+  const audioBufferRef = useRef<Int16Array[]>([])
+  const audioBufferLenRef = useRef(0)
+  const sessionTranscriptRef = useRef<string>("")
+  const lastVoiceIdRef = useRef<string>("")
+  const lastReceivedTextRef = useRef<string>("")
+
+  const connectTencentAsr = useCallback(async () => {
+    if (tencentWsRef.current?.readyState === WebSocket.OPEN) return tencentWsRef.current
+
+    try {
+      // 1. Get signature from backend
+      const res = await fetch("/api/transcribe/stream?action=get_signature", { method: "POST" })
+      if (!res.ok) throw new Error("Failed to get signature")
+      const { signature, secretid, timestamp, expired, nonce, engine_model_type, voice_id, voice_format, needvad, appid } = await res.json()
+
+      // 2. Construct WebSocket URL
+      const wsUrl = `wss://asr.cloud.tencent.com/asr/v2/${appid}?` +
+        `secretid=${secretid}&` +
+        `timestamp=${timestamp}&` +
+        `expired=${expired}&` +
+        `nonce=${nonce}&` +
+        `engine_model_type=${engine_model_type}&` +
+        `voice_id=${voice_id}&` +
+        `voice_format=${voice_format}&` +
+        `needvad=${needvad}&` +
+        `vad_silence_time=1000&` + // 显式增加前端 URL 参数，尽管后端签名已包含
+        `signature=${encodeURIComponent(signature)}`
+
+      const ws = new WebSocket(wsUrl)
+      tencentWsRef.current = ws
+
+      ws.onopen = () => {
+        console.log("Tencent ASR WebSocket connected")
+        // 连接建立后，如果缓存有数据，立即发送（解决首字丢失）
+        if (audioBufferLenRef.current > 0) {
+          // 合并缓存
+          const totalLen = audioBufferLenRef.current
+          const merged = new Int16Array(totalLen)
+          let offset = 0
+          for (const chunk of audioBufferRef.current) {
+            merged.set(chunk, offset)
+            offset += chunk.length
+          }
+          ws.send(merged.buffer)
+          audioBufferRef.current = []
+          audioBufferLenRef.current = 0
+        }
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data as string)
+          if (data.code === 0 && data.result) {
+            // data.result.voice_text_str contains the full text
+            const text = data.result.voice_text_str
+            const currentVoiceId = data.voice_id
+            // Filter hallucinations
+            const isHallucination = (t: string) => {
+              const str = t.toLowerCase().replace(/[.,!?。，！？]/g, '')
+              if (str === "你好") return true
+              if (str === "你好你好") return true
+              if (str === "不客气") return true
+              if (str === "谢谢") return true
+              if (str === "bye") return true
+              if (str === "you're welcome") return true
+              if (str === "字幕" || str.includes("subtitles by")) return true
+              if (str === "amaraorg") return true
+              return false
+            }
+
+            if (text && !isHallucination(text)) {
+              if (!lastVoiceIdRef.current) {
+                lastVoiceIdRef.current = currentVoiceId
+              }
+
+              if (lastVoiceIdRef.current !== currentVoiceId) {
+                if (lastReceivedTextRef.current) {
+                  const isCJK = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(lastReceivedTextRef.current)
+                  sessionTranscriptRef.current += lastReceivedTextRef.current + (isCJK ? "" : " ")
+                }
+                lastVoiceIdRef.current = currentVoiceId
+                lastReceivedTextRef.current = ""
+              }
+
+              lastReceivedTextRef.current = text
+              setLiveTranscript(sessionTranscriptRef.current + text)
+            }
+          }
+        } catch (e) {
+          console.error("Tencent ASR message parse error", e)
+        }
+      }
+
+      ws.onerror = (e) => {
+        console.error("Tencent ASR WebSocket error", e)
+      }
+
+      return ws
+    } catch (e) {
+      console.error("Failed to connect to Tencent ASR", e)
+      return null
+    }
+  }, [])
+
   const startFallbackLive = useCallback(async () => {
     if (fallbackRecorderRef.current || fallbackProcessorRef.current) return
     try {
+      // Connect to Tencent ASR first
+      await connectTencentAsr()
+
       let stream: MediaStream | null = callStatusRef.current === "active" ? callStreamRef.current : null
       let owned = false
       if (!stream) {
@@ -646,43 +758,112 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       processor.onaudioprocess = (event) => {
         if (!liveListenRef.current) return
         const input = event.inputBuffer.getChannelData(0)
-        fallbackBufferedChunksRef.current.push(new Float32Array(input))
-        fallbackBufferedSamplesRef.current += input.length
-        const sampleRate = event.inputBuffer.sampleRate
-        const targetSeconds = 0.6 // Reduced from 1.0s to 0.6s for lower latency
-        const targetSamples = Math.floor(sampleRate * targetSeconds)
-        if (fallbackBufferedSamplesRef.current >= targetSamples) {
-          const total = fallbackBufferedSamplesRef.current
-          const merged = new Float32Array(total)
-          let offset = 0
-          for (const chunk of fallbackBufferedChunksRef.current) {
-            merged.set(chunk, offset)
-            offset += chunk.length
+
+        // If WebSocket is connected, stream audio data directly
+        if (tencentWsRef.current?.readyState === WebSocket.OPEN) {
+          // Convert Float32 to Int16 PCM (required by Tencent ASR)
+          // Downsample from 48k to 16k if necessary (simple decimation)
+          // Ideally we should use a proper resampler, but for now simple skipping works for demo
+          // But wait, the input is likely 44.1k or 48k. Tencent expects 16k.
+          // We need to resample on the fly.
+
+          // Simple resampling: just pick every Nth sample? No, that causes aliasing.
+          // Let's reuse the resampleTo16k but in smaller chunks?
+          // Or just send it to WS and let Tencent handle it? Tencent ASR v2 supports 16k only for this engine.
+
+          // For low latency, we need to process small chunks.
+          // The buffer size is 4096. 4096 / 48000 = 0.085s. This is good.
+
+          // Let's do a quick resampling here
+          const targetSampleRate = 16000;
+          const sourceSampleRate = event.inputBuffer.sampleRate;
+
+          // We can't use async inside onaudioprocess easily for streaming.
+          // Let's use a simple linear interpolation or just nearest neighbor for speed
+          const ratio = sourceSampleRate / targetSampleRate;
+          const newLength = Math.round(input.length / ratio);
+          const pcmData = new Int16Array(newLength);
+
+          for (let i = 0; i < newLength; i++) {
+            const srcIdx = Math.floor(i * ratio);
+            let val = input[srcIdx];
+            if (srcIdx + 1 < input.length) {
+              // Linear interpolation
+              const frac = (i * ratio) - srcIdx;
+              val = val * (1 - frac) + input[srcIdx + 1] * frac;
+            }
+            const s = Math.max(-1, Math.min(1, val));
+            pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
           }
-          fallbackBufferedChunksRef.current = []
-          fallbackBufferedSamplesRef.current = 0
 
-          // Calculate RMS to detect silence
-          let sumSq = 0
-          for (let i = 0; i < merged.length; i++) {
-            sumSq += merged[i] * merged[i]
+          // 如果 WebSocket 已连接，直接发送；否则存入缓冲
+          if (tencentWsRef.current.readyState === WebSocket.OPEN) {
+            // 如果有缓冲数据，先发送缓冲数据
+            if (audioBufferLenRef.current > 0) {
+              const totalLen = audioBufferLenRef.current
+              const merged = new Int16Array(totalLen)
+              let offset = 0
+              for (const chunk of audioBufferRef.current) {
+                merged.set(chunk, offset)
+                offset += chunk.length
+              }
+              tencentWsRef.current.send(merged.buffer)
+              audioBufferRef.current = []
+              audioBufferLenRef.current = 0
+            }
+            tencentWsRef.current.send(pcmData.buffer)
+          } else {
+            // 存入缓冲
+            audioBufferRef.current.push(pcmData)
+            audioBufferLenRef.current += pcmData.length
+            // 限制缓冲区大小，防止内存溢出 (例如保留最近 5 秒)
+            // 16000 * 5 = 80000 samples
+            if (audioBufferLenRef.current > 80000) {
+              const removeCount = audioBufferRef.current[0].length
+              audioBufferRef.current.shift()
+              audioBufferLenRef.current -= removeCount
+            }
           }
-          const rms = Math.sqrt(sumSq / merged.length)
-          // Threshold adjustments:
-          // Mobile: 0.005 (sensitive enough for phone mic, but filters pure silence)
-          // Desktop: 0.02 (higher threshold to filter PC fan noise/keyboard clicks)
-          const silenceThreshold = isMobile ? 0.005 : 0.02
 
-          if (rms < silenceThreshold) return
+        } else {
+          fallbackBufferedChunksRef.current.push(new Float32Array(input))
+          fallbackBufferedSamplesRef.current += input.length
+          const sampleRate = event.inputBuffer.sampleRate
+          const targetSeconds = 0.6 // Reduced from 1.0s to 0.6s for lower latency
+          const targetSamples = Math.floor(sampleRate * targetSeconds)
+          if (fallbackBufferedSamplesRef.current >= targetSamples) {
+            const total = fallbackBufferedSamplesRef.current
+            const merged = new Float32Array(total)
+            let offset = 0
+            for (const chunk of fallbackBufferedChunksRef.current) {
+              merged.set(chunk, offset)
+              offset += chunk.length
+            }
+            fallbackBufferedChunksRef.current = []
+            fallbackBufferedSamplesRef.current = 0
 
-          void (async () => {
-            try {
-              const resampled = await resampleTo16k(merged, sampleRate)
-              const wavBuffer = encodeFloat32ToWav(resampled, 16000)
-              fallbackQueueRef.current.push(new Blob([wavBuffer], { type: "audio/wav" }))
-              void processQueue()
-            } catch { }
-          })()
+            // Calculate RMS to detect silence
+            let sumSq = 0
+            for (let i = 0; i < merged.length; i++) {
+              sumSq += merged[i] * merged[i]
+            }
+            const rms = Math.sqrt(sumSq / merged.length)
+            // Threshold adjustments:
+            // Mobile: 0.005 (sensitive enough for phone mic, but filters pure silence)
+            // Desktop: 0.02 (higher threshold to filter PC fan noise/keyboard clicks)
+            const silenceThreshold = isMobile ? 0.005 : 0.02
+
+            if (rms < silenceThreshold) return
+
+            void (async () => {
+              try {
+                const resampled = await resampleTo16k(merged, sampleRate)
+                const wavBuffer = encodeFloat32ToWav(resampled, 16000)
+                fallbackQueueRef.current.push(new Blob([wavBuffer], { type: "audio/wav" }))
+                void processQueue()
+              } catch { }
+            })()
+          }
         }
       }
       setLiveSpeechSupported(true)

@@ -168,6 +168,9 @@ export async function POST(req: Request) {
       Data: base64Audio,
       DataLen: arrayBuffer.byteLength,
       UsrAudioKey: usrAudioKey,
+      FilterDirty: 0, // Disable profanity filter to prevent unexpected truncation
+      FilterModal: 0, // Disable modal particle filter (e.g. "ah", "um")
+      ConvertNumMode: 1, // Smart number conversion
     })
     const host = "asr.tencentcloudapi.com"
     const action = "SentenceRecognition"
