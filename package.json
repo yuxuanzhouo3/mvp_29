@@ -91,6 +91,7 @@
     "lightningcss-wasm": "1.30.2"
   },
   "devDependencies": {
+    "@cloudbase/cli": "^2.12.2",
     "@cloudbase/framework-plugin-container": "^1.9.7",
     "@tailwindcss/postcss": "^4.1.9",
     "@types/bcryptjs": "^2.4.6",
