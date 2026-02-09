@@ -10,9 +10,45 @@ type TextToSpeechOptions = {
 export function useTextToSpeech(options: TextToSpeechOptions = {}) {
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [currentUtterance, setCurrentUtterance] = useState<SpeechSynthesisUtterance | null>(null)
+  const [isUnlocked, setIsUnlocked] = useState(false)
   const optionsRef = useRef(options)
+  const unlockedRef = useRef(false)
+  const isSupported = typeof window !== "undefined" && typeof window.speechSynthesis !== "undefined"
 
   optionsRef.current = options
+
+  const unlock = useCallback(() => {
+    if (!isSupported) return Promise.resolve(false)
+    if (unlockedRef.current) return Promise.resolve(true)
+    return new Promise<boolean>((resolve) => {
+      try {
+        // Fix for iOS: resume before speaking
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume()
+        }
+        window.speechSynthesis.cancel()
+        const utterance = new SpeechSynthesisUtterance(" ")
+        utterance.lang = "en-US"
+        // Some browsers ignore silence/low volume, but 0.01 is usually safe
+        utterance.volume = 0.01
+        const timer = setTimeout(() => resolve(false), 2000)
+        utterance.onstart = () => {
+          clearTimeout(timer)
+          unlockedRef.current = true
+          setIsUnlocked(true)
+          resolve(true)
+          window.speechSynthesis.cancel()
+        }
+        utterance.onerror = () => {
+          clearTimeout(timer)
+          resolve(false)
+        }
+        window.speechSynthesis.speak(utterance)
+      } catch {
+        resolve(false)
+      }
+    })
+  }, [isSupported])
 
   const speak = useCallback((text: string, languageCode: string) => {
     if (!window.speechSynthesis) {
@@ -20,6 +56,10 @@ export function useTextToSpeech(options: TextToSpeechOptions = {}) {
       return
     }
 
+    // Fix for iOS: resume before speaking
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume()
+    }
     window.speechSynthesis.cancel()
 
     const utterance = new SpeechSynthesisUtterance(text)
@@ -43,6 +83,11 @@ export function useTextToSpeech(options: TextToSpeechOptions = {}) {
     utterance.onstart = () => {
       console.log("[v0] Speech started")
       setIsSpeaking(true)
+      // If we successfully started speaking, we are unlocked
+      if (!unlockedRef.current) {
+        unlockedRef.current = true
+        setIsUnlocked(true)
+      }
     }
 
     utterance.onend = () => {
@@ -87,5 +132,8 @@ export function useTextToSpeech(options: TextToSpeechOptions = {}) {
     pause,
     resume,
     isSpeaking,
+    isSupported,
+    unlock,
+    isUnlocked,
   }
 }

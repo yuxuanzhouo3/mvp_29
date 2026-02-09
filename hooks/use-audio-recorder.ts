@@ -31,7 +31,23 @@ export function useAudioRecorder() {
 
   const startRecording = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 48000,
+          sampleSize: 16,
+          googEchoCancellation: true,
+          googExperimentalEchoCancellation: true,
+          googAutoGainControl: true,
+          googExperimentalAutoGainControl: true,
+          googNoiseSuppression: true,
+          googExperimentalNoiseSuppression: true,
+          googHighpassFilter: true,
+        } as MediaTrackConstraints,
+      })
       streamRef.current = stream
 
       const mimeTypeCandidates = isTencentDeploy

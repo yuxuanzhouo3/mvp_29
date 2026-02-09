@@ -148,7 +148,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const [isProcessing, setIsProcessing] = useState(false)
   const [settings, setSettings] = useState<AppSettings>({
     darkMode: false,
-    autoPlayTranslations: false,
+    autoPlayTranslations: true,
     onlyHearTranslatedVoice: true,
     speechRate: 0.9,
     speechVolume: 1.0,
@@ -160,6 +160,10 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     String(process.env.NEXT_PUBLIC_DEPLOY_TARGET ?? "")
       .trim()
       .toLowerCase() === "tencent"
+  const isMobile = useMemo(() => {
+    if (typeof navigator === "undefined") return false
+    return /iphone|ipad|ipod|android/i.test(navigator.userAgent)
+  }, [])
   const [callStatus, setCallStatus] = useState<"idle" | "outgoing" | "incoming" | "active">("idle")
   const [callPeer, setCallPeer] = useState<{ id: string; name: string } | null>(null)
   const [callId, setCallId] = useState<string | null>(null)
@@ -213,14 +217,31 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const peerConnRef = useRef<RTCPeerConnection | null>(null)
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null)
   const liveListenRef = useRef(false)
-  const { speak } = useTextToSpeech({ rate: settings.speechRate, volume: settings.speechVolume })
+  const { speak, unlock: unlockTts, isSupported: ttsSupported, isUnlocked: isTtsUnlocked } = useTextToSpeech({
+    rate: settings.speechRate,
+    volume: settings.speechVolume,
+  })
   const remoteCommittedTranslationRef = useRef("")
+  const remoteSpokenTranslationRef = useRef("")
+  const remoteLastSpokenTextRef = useRef("")
+  const ttsUnlockedRef = useRef(false)
+  const ttsUnlockingRef = useRef(false)
+  const ttsUnlockPromptedRef = useRef(false)
+  const ttsUnsupportedNotifiedRef = useRef(false)
+  const pendingTtsRef = useRef<{ text: string; lang: string } | null>(null)
+  const ttsDeferredTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const ttsDeferredTextRef = useRef("")
+  const ttsDeferredFullRef = useRef("")
 
   useEffect(() => {
     callStatusRef.current = callStatus
     callPeerRef.current = callPeer
     callIdRef.current = callId
   }, [callStatus, callPeer, callId])
+
+  useEffect(() => {
+    ttsUnlockedRef.current = isTtsUnlocked
+  }, [isTtsUnlocked])
 
   const randomId = useCallback((): string => {
     if (typeof window !== "undefined" && typeof window.crypto?.randomUUID === "function") {
@@ -430,6 +451,9 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
+        channelCount: 1,
+        sampleRate: 48000,
+        sampleSize: 16,
         // Chrome-specific constraints for enhanced voice isolation
         googEchoCancellation: true,
         googExperimentalEchoCancellation: true,
@@ -462,6 +486,9 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
+            channelCount: 1,
+            sampleRate: 48000,
+            sampleSize: 16,
             // Chrome-specific constraints
             googEchoCancellation: true,
             googExperimentalEchoCancellation: true,
@@ -537,8 +564,27 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                 const isCJK = lang.toLowerCase().startsWith("zh") ||
                   lang.toLowerCase().startsWith("ja") ||
                   lang.toLowerCase().startsWith("ko")
-                const separator = isCJK ? "" : " "
-                nextText = `${prev}${separator}${normalized}`.trim()
+                if (isMobile) {
+                  nextText = normalized
+                } else {
+                  const separator = isCJK ? "" : " "
+                  nextText = `${prev}${separator}${normalized}`.trim()
+                }
+              }
+            }
+            const langForTrim = sourceLanguageRef.current === "auto"
+              ? detectLanguageFromText(nextText)
+              : sourceLanguageRef.current
+            const isCJKForTrim = langForTrim.toLowerCase().startsWith("zh") ||
+              langForTrim.toLowerCase().startsWith("ja") ||
+              langForTrim.toLowerCase().startsWith("ko")
+            if (nextText.length > 160) {
+              const parts = (nextText.match(/[^。！？.!?]+[。！？.!?]+|[^。！？.!?]+$/g) ?? [])
+                .map((s) => s.trim())
+                .filter(Boolean)
+              if (parts.length > 2) {
+                const joiner = isCJKForTrim ? "" : " "
+                nextText = parts.slice(-2).join(joiner).trim()
               }
             }
             fallbackLastTextRef.current = nextText
@@ -602,8 +648,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         fallbackBufferedChunksRef.current.push(new Float32Array(input))
         fallbackBufferedSamplesRef.current += input.length
         const sampleRate = event.inputBuffer.sampleRate
-        // Reduce slice duration from 1.2s to 0.6s to improve real-time responsiveness
-        const targetSamples = Math.floor(sampleRate * 0.6)
+        const targetSeconds = isMobile ? 1.2 : 1.0
+        const targetSamples = Math.floor(sampleRate * targetSeconds)
         if (fallbackBufferedSamplesRef.current >= targetSamples) {
           const total = fallbackBufferedSamplesRef.current
           const merged = new Float32Array(total)
@@ -621,7 +667,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             sumSq += merged[i] * merged[i]
           }
           const rms = Math.sqrt(sumSq / merged.length)
-          const silenceThreshold = 0.01 // Skip silent chunks to prevent hallucinations
+          const silenceThreshold = isMobile ? 0.006 : 0.008
 
           if (rms < silenceThreshold) return
 
@@ -645,7 +691,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       })
       stopFallbackLive()
     }
-  }, [encodeFloat32ToWav, isTencentDeploy, resampleTo16k, sourceLanguage.code, stopFallbackLive, t, toast, transcribeAudio])
+  }, [encodeFloat32ToWav, isMobile, isTencentDeploy, resampleTo16k, sourceLanguage.code, stopFallbackLive, t, toast, transcribeAudio])
 
 
 
@@ -1068,14 +1114,14 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     const targetCode = targetLanguage.code
     const sourcePrimary = primaryOf(sourceCode)
     const targetPrimary = primaryOf(targetCode)
-    const deltaTranscript = getDeltaText(liveTranscript, liveCommittedTranscriptRef.current)
-
     if (liveTranslateTimerRef.current) {
       clearTimeout(liveTranslateTimerRef.current)
       liveTranslateTimerRef.current = null
     }
 
-    if (!deltaTranscript.trim()) {
+    const fullTranscript = typeof liveTranscript === "string" ? liveTranscript.trim() : ""
+
+    if (!fullTranscript) {
       setLiveTranslation("")
       return
     }
@@ -1085,7 +1131,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     // BUT if the detected language is different (e.g. speaking Chinese while set to English),
     // we MUST translate, even if the user manually selected English as source.
     if (sourcePrimary === targetPrimary && primaryOf(detected) === sourcePrimary) {
-      setLiveTranslation(deltaTranscript)
+      setLiveTranslation(fullTranscript)
       return
     }
 
@@ -1094,7 +1140,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       const controller = new AbortController()
       liveTranslateAbortRef.current = controller
 
-      void translateText(deltaTranscript, sourceCode, targetCode, controller.signal)
+      void translateText(fullTranscript, sourceCode, targetCode, controller.signal)
         .then((translated) => {
           if (!controller.signal.aborted) setLiveTranslation(translated)
         })
@@ -1114,7 +1160,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         liveTranslateAbortRef.current = null
       }
     }
-  }, [getDeltaText, isInRoom, liveTranscript, primaryOf, sourceLanguage.code, targetLanguage.code])
+  }, [isInRoom, liveTranscript, primaryOf, sourceLanguage.code, targetLanguage.code])
 
   useEffect(() => {
     if (!shouldLiveListen) return
@@ -1134,17 +1180,28 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     }
   }, [commitLiveCaption, liveTranscript, liveTranslation, shouldLiveListen])
 
+  const normalizeLiveDisplay = (text: string, languageHint: string) => {
+    const raw = typeof text === "string" ? text : ""
+    const trimmed = raw.replace(/\s+/g, " ").trim()
+    if (!trimmed) return ""
+    const sample = trimmed
+    const primary = primaryOf(languageHint)
+    const isCjk = ["zh", "ja", "ko"].includes(primary ?? "") || /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(sample)
+    if (isCjk) {
+      return trimmed
+        .replace(/([\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af])\s+([\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af])/g, "$1$2")
+        .replace(/\s*([。！？!?，、；：])\s*/g, "$1")
+        .trim()
+    }
+    return trimmed.replace(/\s+([,.!?;:])/g, "$1")
+  }
+
   const formattedLiveTranscript = (() => {
-    const currentLine = getDeltaText(liveTranscript, liveCommittedTranscriptRef.current)
-    const lines = [...liveTranscriptLines, currentLine].filter((item) => item && item.trim())
-    // Keep last 4 items and join with space to flow horizontally instead of stacking vertically
-    return lines.slice(-4).join(" ")
+    return normalizeLiveDisplay(liveTranscript, sourceLanguage.code)
   })()
 
   const formattedLiveTranslation = (() => {
-    const lines = [...liveTranslationLines, liveTranslation].filter((item) => item && item.trim())
-    // Keep last 4 items and join with space to flow horizontally
-    return lines.slice(-4).join(" ")
+    return normalizeLiveDisplay(liveTranslation, targetLanguage.code)
   })()
 
   useEffect(() => {
@@ -1326,16 +1383,149 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   useEffect(() => {
     if (callStatus !== "active") return
     if (!settings.autoPlayTranslations) return
-    const delta = getDeltaText(remoteLiveTranslation, remoteCommittedTranslationRef.current)
+    const full = remoteLiveTranslation.trim()
+    if (!full) {
+      remoteSpokenTranslationRef.current = ""
+      remoteLastSpokenTextRef.current = ""
+      if (ttsDeferredTimerRef.current) {
+        clearTimeout(ttsDeferredTimerRef.current)
+        ttsDeferredTimerRef.current = null
+      }
+      ttsDeferredTextRef.current = ""
+      ttsDeferredFullRef.current = ""
+      return
+    }
+    const lastFull = remoteSpokenTranslationRef.current
+    const delta = lastFull && full.startsWith(lastFull)
+      ? full.slice(lastFull.length)
+      : splitIntoSentences(full).slice(-1)[0] ?? ""
     const text = delta.trim()
     if (!text) return
+    if (text === remoteLastSpokenTextRef.current) return
+    if (isMobile && ttsSupported && !ttsUnlockedRef.current) {
+      pendingTtsRef.current = { text, lang: targetLanguage.code }
+      if (!ttsUnlockPromptedRef.current) {
+        ttsUnlockPromptedRef.current = true
+        toast({
+          title: "点击屏幕启用语音播放",
+          description: "移动端需要先触摸页面，系统才允许播放语音。",
+        })
+      }
+      return
+    }
     const shouldSpeak = /[。！？.!?]$/.test(text) || text.length >= 20
-    if (!shouldSpeak) return
+    if (!shouldSpeak) {
+      if (isMobile) {
+        if (ttsDeferredTimerRef.current) {
+          clearTimeout(ttsDeferredTimerRef.current)
+        }
+        ttsDeferredTextRef.current = text
+        ttsDeferredFullRef.current = full
+        ttsDeferredTimerRef.current = setTimeout(() => {
+          if (ttsDeferredTextRef.current !== text) return
+          if (remoteLastSpokenTextRef.current === text) return
+          if (ttsSupported && !ttsUnlockedRef.current) return
+          speak(text, targetLanguage.code)
+          remoteSpokenTranslationRef.current = ttsDeferredFullRef.current
+          remoteLastSpokenTextRef.current = text
+        }, 1000)
+      }
+      return
+    }
+    if (ttsDeferredTimerRef.current) {
+      clearTimeout(ttsDeferredTimerRef.current)
+      ttsDeferredTimerRef.current = null
+    }
     speak(text, targetLanguage.code)
-    remoteCommittedTranslationRef.current = (
-      remoteCommittedTranslationRef.current ? `${remoteCommittedTranslationRef.current} ${text}` : text
-    ).trim()
-  }, [callStatus, getDeltaText, remoteLiveTranslation, settings.autoPlayTranslations, speak, targetLanguage.code])
+    remoteSpokenTranslationRef.current = full
+    remoteLastSpokenTextRef.current = text
+  }, [
+    callStatus,
+    isMobile,
+    remoteLiveTranslation,
+    settings.autoPlayTranslations,
+    speak,
+    splitIntoSentences,
+    targetLanguage.code,
+    toast,
+    ttsSupported,
+  ])
+
+  useEffect(() => {
+    if (!ttsSupported) return
+    const tryUnlock = () => {
+      if (ttsUnlockedRef.current || ttsUnlockingRef.current) return
+      ttsUnlockingRef.current = true
+      void unlockTts().then((ok) => {
+        ttsUnlockingRef.current = false
+        if (!ok) return
+        ttsUnlockedRef.current = true
+        const pending = pendingTtsRef.current
+        if (pending) {
+          pendingTtsRef.current = null
+          speak(pending.text, pending.lang)
+        }
+      })
+    }
+    window.addEventListener("pointerdown", tryUnlock, { passive: true })
+    return () => window.removeEventListener("pointerdown", tryUnlock)
+  }, [speak, ttsSupported, unlockTts])
+
+  useEffect(() => {
+    if (!isMobile || !settings.autoPlayTranslations) return
+    if (ttsSupported) return
+    if (ttsUnsupportedNotifiedRef.current) return
+    ttsUnsupportedNotifiedRef.current = true
+    toast({
+      title: "当前浏览器不支持语音播放",
+      description: "请使用系统浏览器或关闭静音模式后再试。",
+      variant: "destructive",
+    })
+  }, [isMobile, settings.autoPlayTranslations, toast, ttsSupported])
+
+  const handleUnlockTts = useCallback(async () => {
+    if (!ttsSupported) {
+      toast({
+        title: "当前浏览器不支持语音播放",
+        description: "请使用系统浏览器或关闭静音模式后再试。",
+        variant: "destructive",
+      })
+      return
+    }
+    if (ttsUnlockingRef.current || ttsUnlockedRef.current) return
+    ttsUnlockingRef.current = true
+    const ok = await unlockTts()
+    ttsUnlockingRef.current = false
+    if (!ok) {
+      toast({
+        title: "语音播放未解锁",
+        description: "请点击页面后再尝试启用语音播放。",
+        variant: "destructive",
+      })
+      return
+    }
+    const pending = pendingTtsRef.current
+    if (pending) {
+      pendingTtsRef.current = null
+      speak(pending.text, pending.lang)
+    }
+  }, [speak, toast, ttsSupported, unlockTts])
+
+  const handleTestTts = useCallback(() => {
+    if (!ttsSupported) {
+      toast({
+        title: "当前浏览器不支持语音播放",
+        description: "请使用系统浏览器或关闭静音模式后再试。",
+        variant: "destructive",
+      })
+      return
+    }
+    if (!ttsUnlockedRef.current) {
+      void handleUnlockTts()
+      return
+    }
+    speak("语音测试", targetLanguage.code)
+  }, [handleUnlockTts, speak, targetLanguage.code, toast, ttsSupported])
 
   useEffect(() => {
     const el = remoteAudioRef.current
@@ -2516,6 +2706,28 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                     <div className="mt-1 text-[9px] text-muted-foreground/60 font-medium whitespace-nowrap">
                       {t("language.hint", { source: sourceLanguage.name, target: targetLanguage.name })}
                     </div>
+                    {isMobile && settings.autoPlayTranslations ? (
+                      <div className="mt-1 flex items-center gap-1">
+                        <Button
+                          variant={isTtsUnlocked ? "secondary" : "outline"}
+                          size="sm"
+                          className="h-7 px-2 text-[10px]"
+                          onClick={handleUnlockTts}
+                          disabled={!ttsSupported}
+                        >
+                          {isTtsUnlocked ? "语音已启用" : "启用语音"}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-[10px]"
+                          onClick={handleTestTts}
+                          disabled={!ttsSupported}
+                        >
+                          测试
+                        </Button>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="flex-1 min-w-0 max-w-[100px] flex flex-col gap-1">

@@ -40,7 +40,7 @@ export type AppSettings = {
 
 const DEFAULT_SETTINGS: AppSettings = {
   darkMode: false,
-  autoPlayTranslations: false,
+  autoPlayTranslations: true,
   onlyHearTranslatedVoice: true,
   speechRate: 0.9,
   speechVolume: 1.0,
