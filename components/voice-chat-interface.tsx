@@ -529,7 +529,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         })
         // 连接建立后，如果缓存有数据，立即发送（解决首字丢失）
         if (audioBufferLenRef.current > 0) {
-          // 合并缓存
+          // 将缓存的数据分块发送，而不是一次性发送，避免数据包过大
+          const CHUNK_SIZE = 12800 // 400ms (16k * 2 bytes * 0.4s)
           const totalLen = audioBufferLenRef.current
           const merged = new Int16Array(totalLen)
           let offset = 0
@@ -537,7 +538,17 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             merged.set(chunk, offset)
             offset += chunk.length
           }
-          ws.send(merged.buffer)
+
+          // 分块发送
+          let sentBytes = 0
+          const buffer = merged.buffer
+          while (sentBytes < buffer.byteLength) {
+            const end = Math.min(sentBytes + CHUNK_SIZE, buffer.byteLength)
+            const chunk = buffer.slice(sentBytes, end)
+            ws.send(chunk)
+            sentBytes = end
+          }
+
           audioBufferRef.current = []
           audioBufferLenRef.current = 0
         }
@@ -1562,21 +1573,20 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     }
     const shouldSpeak = /[。！？.!?]$/.test(text) || text.length >= 20
     if (!shouldSpeak) {
-      if (isMobile) {
-        if (ttsDeferredTimerRef.current) {
-          clearTimeout(ttsDeferredTimerRef.current)
-        }
-        ttsDeferredTextRef.current = text
-        ttsDeferredFullRef.current = full
-        ttsDeferredTimerRef.current = setTimeout(() => {
-          if (ttsDeferredTextRef.current !== text) return
-          if (remoteLastSpokenTextRef.current === text) return
-          if (ttsSupported && !ttsUnlockedRef.current) return
-          speak(text, targetLanguage.code)
-          remoteSpokenTranslationRef.current = ttsDeferredFullRef.current
-          remoteLastSpokenTextRef.current = text
-        }, 1000)
+      // 桌面端和移动端都需要防抖逻辑，处理流式文本的碎片
+      if (ttsDeferredTimerRef.current) {
+        clearTimeout(ttsDeferredTimerRef.current)
       }
+      ttsDeferredTextRef.current = text
+      ttsDeferredFullRef.current = full
+      ttsDeferredTimerRef.current = setTimeout(() => {
+        if (ttsDeferredTextRef.current !== text) return
+        if (remoteLastSpokenTextRef.current === text) return
+        if (ttsSupported && !ttsUnlockedRef.current) return
+        speak(text, targetLanguage.code)
+        remoteSpokenTranslationRef.current = ttsDeferredFullRef.current
+        remoteLastSpokenTextRef.current = text
+      }, 1000)
       return
     }
     if (ttsDeferredTimerRef.current) {
