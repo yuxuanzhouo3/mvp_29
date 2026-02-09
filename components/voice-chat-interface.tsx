@@ -483,6 +483,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
 
   // Tencent Cloud Real-time ASR WebSocket Client
   const tencentWsRef = useRef<WebSocket | null>(null)
+  const isConnectingWsRef = useRef(false)
   const audioBufferRef = useRef<Int16Array[]>([])
   const audioBufferLenRef = useRef(0)
   const sessionTranscriptRef = useRef<string>("")
@@ -496,6 +497,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     }
 
     try {
+      isConnectingWsRef.current = true
       // 1. Get signature from backend
       const res = await fetch("/api/transcribe/stream?action=get_signature", { method: "POST" })
       if (!res.ok) {
@@ -514,7 +516,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         `voice_id=${voice_id}&` +
         `voice_format=${voice_format}&` +
         `needvad=${needvad}&` +
-        `vad_silence_time=1000&` + // 显式增加前端 URL 参数，尽管后端签名已包含
+        `vad_silence_time=2000&` + // 显式增加前端 URL 参数 (2s)
         `signature=${encodeURIComponent(signature)}`
 
       const ws = new WebSocket(wsUrl)
@@ -523,6 +525,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       ws.onopen = () => {
         console.log("Tencent ASR WebSocket connected")
         setAsrMode("websocket")
+        isConnectingWsRef.current = false
         toast({
           title: "实时语音连接成功",
           description: "已切换至腾讯云流式语音识别模式 (WebSocket)",
@@ -601,16 +604,19 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       ws.onerror = (e) => {
         console.error("Tencent ASR WebSocket error", e)
         setAsrMode("http") // Fallback
+        isConnectingWsRef.current = false
       }
 
       ws.onclose = () => {
         setAsrMode("http") // Fallback on close
+        isConnectingWsRef.current = false
       }
 
       return ws
     } catch (e: any) {
       console.error("Failed to connect to Tencent ASR", e)
       setAsrMode("http")
+      isConnectingWsRef.current = false
       toast({
         title: "实时语音连接失败",
         description: e.message || "无法连接到腾讯云 ASR，将降级使用 HTTP 模式",
@@ -623,8 +629,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const startFallbackLive = useCallback(async () => {
     if (fallbackRecorderRef.current || fallbackProcessorRef.current) return
     try {
-      // Connect to Tencent ASR first
-      await connectTencentAsr()
+      // Connect to Tencent ASR in parallel (don't await) to allow immediate audio buffering
+      void connectTencentAsr()
 
       let stream: MediaStream | null = callStatusRef.current === "active" ? callStreamRef.current : null
       let owned = false
@@ -814,11 +820,11 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
 
         // Check if we should use WebSocket (Open or Connecting)
         const ws = tencentWsRef.current
-        // We use WebSocket if it exists and is not closed/closing
-        const useWs = ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+        // We use WebSocket if it exists and is not closed/closing OR if we are currently connecting (ws might be null)
+        const useWs = isConnectingWsRef.current || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))
 
         if (useWs) {
-          if (ws.readyState === WebSocket.OPEN) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
             // Send buffered data first if any
             if (audioBufferLenRef.current > 0) {
               const totalLen = audioBufferLenRef.current
