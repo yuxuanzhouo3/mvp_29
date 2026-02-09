@@ -719,7 +719,16 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     async () => {
       if (peerConnRef.current) return peerConnRef.current
       const pc = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        iceServers: [
+          // 小米 STUN
+          { urls: "stun:stun.miwifi.com" },
+          // 腾讯 STUN
+          { urls: "stun:stun.qq.com" },
+          // Bilibili STUN
+          { urls: "stun:stun.chat.bilibili.com" },
+          // Google STUN (Backup)
+          { urls: "stun:stun.l.google.com:19302" }
+        ],
       })
       pc.onicecandidate = (evt) => {
         const cand = evt.candidate
