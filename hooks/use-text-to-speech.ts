@@ -13,13 +13,21 @@ export function useTextToSpeech(options: TextToSpeechOptions = {}) {
   const [isUnlocked, setIsUnlocked] = useState(false)
   const optionsRef = useRef(options)
   const unlockedRef = useRef(false)
-  const isSupported = typeof window !== "undefined" && typeof window.speechSynthesis !== "undefined"
+  const isSupported = typeof window !== "undefined" && (typeof window.speechSynthesis !== "undefined" || (typeof window !== "undefined" && typeof (window as any).AndroidTTS !== "undefined"))
 
   optionsRef.current = options
 
   const unlock = useCallback(() => {
     if (!isSupported) return Promise.resolve(false)
     if (unlockedRef.current) return Promise.resolve(true)
+
+    // If AndroidTTS is available, we consider it always unlocked or not needing unlock
+    if (typeof window !== "undefined" && (window as any).AndroidTTS) {
+      unlockedRef.current = true
+      setIsUnlocked(true)
+      return Promise.resolve(true)
+    }
+
     return new Promise<boolean>((resolve) => {
       try {
         // Fix for iOS: resume before speaking
@@ -51,6 +59,20 @@ export function useTextToSpeech(options: TextToSpeechOptions = {}) {
   }, [isSupported])
 
   const speak = useCallback((text: string, languageCode: string) => {
+    // Check for AndroidTTS first
+    if (typeof window !== "undefined" && (window as any).AndroidTTS) {
+      try {
+        (window as any).AndroidTTS.speak(text, languageCode)
+        setIsSpeaking(true)
+        // Estimate duration: ~10 chars per second + 1s buffer
+        const duration = Math.max(1000, (text.length / 10) * 1000)
+        setTimeout(() => setIsSpeaking(false), duration)
+        return
+      } catch (e) {
+        console.error("AndroidTTS failed:", e)
+      }
+    }
+
     if (!window.speechSynthesis) {
       console.error("[v0] Speech synthesis not supported")
       return

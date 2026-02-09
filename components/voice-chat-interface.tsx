@@ -419,8 +419,9 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           const rms = Math.sqrt(sumSq / dataArray.length)
 
           // Threshold: 0.01 is roughly silence. 0.02 is quiet noise.
-          // Increased to 0.04 to filter out background chatter and non-speaker noise
-          if (rms > 0.04) {
+          // Adjusted for mobile: 0.01 for mobile, 0.04 for desktop
+          const vadThreshold = isMobile ? 0.01 : 0.04
+          if (rms > vadThreshold) {
             globalVoiceActivityRef.current = Date.now()
           }
         }, 100)
@@ -648,7 +649,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         fallbackBufferedChunksRef.current.push(new Float32Array(input))
         fallbackBufferedSamplesRef.current += input.length
         const sampleRate = event.inputBuffer.sampleRate
-        const targetSeconds = isMobile ? 1.2 : 1.0
+        const targetSeconds = 1.0 // Unified to 1.0s for lower latency
         const targetSamples = Math.floor(sampleRate * targetSeconds)
         if (fallbackBufferedSamplesRef.current >= targetSamples) {
           const total = fallbackBufferedSamplesRef.current
@@ -667,7 +668,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             sumSq += merged[i] * merged[i]
           }
           const rms = Math.sqrt(sumSq / merged.length)
-          const silenceThreshold = isMobile ? 0.006 : 0.008
+          const silenceThreshold = isMobile ? 0.004 : 0.008 // Lowered threshold for mobile to capture soft speech
 
           if (rms < silenceThreshold) return
 
