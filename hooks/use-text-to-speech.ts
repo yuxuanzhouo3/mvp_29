@@ -23,9 +23,12 @@ export function useTextToSpeech(options: TextToSpeechOptions = {}) {
 
     // If AndroidTTS is available, we consider it always unlocked or not needing unlock
     if (typeof window !== "undefined" && (window as any).AndroidTTS) {
+      console.log("[useTextToSpeech] AndroidTTS detected in unlock");
       unlockedRef.current = true
       setIsUnlocked(true)
       return Promise.resolve(true)
+    } else {
+      console.log("[useTextToSpeech] AndroidTTS NOT detected in unlock");
     }
 
     return new Promise<boolean>((resolve) => {
@@ -59,8 +62,10 @@ export function useTextToSpeech(options: TextToSpeechOptions = {}) {
   }, [isSupported])
 
   const speak = useCallback((text: string, languageCode: string) => {
+    console.log("[useTextToSpeech] speak called", text, languageCode);
     // Check for AndroidTTS first
     if (typeof window !== "undefined" && (window as any).AndroidTTS) {
+      console.log("[useTextToSpeech] Using AndroidTTS");
       try {
         (window as any).AndroidTTS.speak(text, languageCode)
         setIsSpeaking(true)

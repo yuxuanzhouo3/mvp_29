@@ -668,7 +668,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             sumSq += merged[i] * merged[i]
           }
           const rms = Math.sqrt(sumSq / merged.length)
-          const silenceThreshold = isMobile ? 0.004 : 0.008 // Lowered threshold for mobile to capture soft speech
+          const silenceThreshold = isMobile ? 0.01 : 0.02 // Increased threshold to filter noise and reduce hallucination
 
           if (rms < silenceThreshold) return
 
