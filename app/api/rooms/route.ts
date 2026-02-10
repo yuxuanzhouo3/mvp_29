@@ -315,22 +315,22 @@ function normalizeJoinSessionPolicy(value: unknown): JoinSessionPolicy {
 
 function getJoinSessionPolicy(): JoinSessionPolicy {
   const direct = normalizeJoinSessionPolicy(process.env.VOICELINK_JOIN_SESSION_POLICY)
-  if (direct !== "allow") return direct
+  if (direct === "single_account") return direct
 
   const flag = String(process.env.VOICELINK_KICK_SAME_ACCOUNT_ON_JOIN ?? "").trim().toLowerCase()
   if (flag === "1" || flag === "true" || flag === "yes" || flag === "on") return "single_account"
 
-  return "allow"
+  return "single_account"
 }
 
 function getAccountIdFromUserId(userId: string): string | null {
   const raw = typeof userId === "string" ? userId.trim() : ""
   if (!raw) return null
-  const idx = raw.indexOf(":")
-  if (idx <= 0) return null
-  const base = raw.slice(0, idx).trim()
-  if (!base) return null
-  return base
+  const parts = raw.split(":").map((part) => part.trim()).filter(Boolean)
+  if (parts.length === 0) return null
+  if (parts.length === 1) return parts[0]
+  const base = parts.slice(0, -1).join(":").trim()
+  return base || parts[0]
 }
 
 type RoomJoinMode = "public" | "password"
