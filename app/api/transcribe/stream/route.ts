@@ -127,7 +127,7 @@ export async function POST(req: Request) {
       'voice_id': Math.random().toString(36).substring(2),
       'voice_format': 1, // 1: wav, 8: spex
       'needvad': 1,
-      'vad_silence_time': 1200, // Reduced from 3000ms to 1200ms to improve latency
+      'vad_silence_time': 2000, // Increased to 2000ms to prevent sentence fragmentation
     };
 
     const signature = getAuthSignature(params, secretKey);

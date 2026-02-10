@@ -92,6 +92,7 @@ type CallSignalPayload = {
   sdpType?: RTCSdpType
   candidate?: { candidate: string; sdpMid?: string | null; sdpMLineIndex?: number | null }
   transcript?: string
+  confirmedTranscript?: string
   translation?: string
   sourceLanguage?: string
   targetLanguage?: string
@@ -150,6 +151,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const [liveTranscriptLines, setLiveTranscriptLines] = useState<string[]>([])
   const [liveTranslationLines, setLiveTranslationLines] = useState<string[]>([])
   const [remoteLiveTranscript, setRemoteLiveTranscript] = useState("")
+  const [remoteConfirmedTranscript, setRemoteConfirmedTranscript] = useState("")
   const [remoteLiveTranslation, setRemoteLiveTranslation] = useState("")
   const [remoteLiveSourceLanguage, setRemoteLiveSourceLanguage] = useState("")
   const [remoteLiveUserName, setRemoteLiveUserName] = useState("")
@@ -307,6 +309,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     setLiveTranslation("")
     setLiveTranscriptLines([])
     setLiveTranslationLines([])
+    setConfirmedTranscript("")
     liveCommittedTranscriptRef.current = ""
     liveCommittedTranslationRef.current = ""
     sessionTranscriptRef.current = ""
@@ -489,6 +492,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   }, [sourceLanguage.code])
 
   const [asrMode, setAsrMode] = useState<"off" | "http" | "websocket">("off")
+  const [isInterim, setIsInterim] = useState(false)
+  const [confirmedTranscript, setConfirmedTranscript] = useState("")
 
   // Tencent Cloud Real-time ASR WebSocket Client
   const tencentWsRef = useRef<WebSocket | null>(null)
@@ -658,6 +663,9 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             // data.result.voice_text_str contains the full text
             const text = data.result.voice_text_str
             const currentVoiceId = data.voice_id
+            // final: 0 means interim, 1 means final
+            const isFinal = data.final === 1
+
             // Filter hallucinations
             const isHallucination = (t: string) => {
               const str = t.toLowerCase().replace(/[.,!?。，！？]/g, '')
@@ -682,12 +690,19 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                   const isCJK = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(lastReceivedTextRef.current)
                   sessionTranscriptRef.current += lastReceivedTextRef.current + (isCJK ? "" : " ")
                 }
+                setConfirmedTranscript(sessionTranscriptRef.current)
                 lastVoiceIdRef.current = currentVoiceId
                 lastReceivedTextRef.current = ""
               }
 
               lastReceivedTextRef.current = text
               setLiveTranscript(sessionTranscriptRef.current + text)
+              setIsInterim(!isFinal)
+
+              if (isFinal) {
+                const isCJK = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(text)
+                setConfirmedTranscript(sessionTranscriptRef.current + text + (isCJK ? "" : " "))
+              }
             }
           }
         } catch (e) {
@@ -896,7 +911,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       })
       fallbackAudioContextRef.current = audioContext
       const source = audioContext.createMediaStreamSource(stream)
-      const processor = audioContext.createScriptProcessor(4096, 1, 1)
+      // Reduce buffer size to 1024 (64ms at 16kHz) for lower latency
+      const processor = audioContext.createScriptProcessor(1024, 1, 1)
       const gainNode = audioContext.createGain()
       gainNode.gain.value = 0
       source.connect(processor)
@@ -1198,6 +1214,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       const next = !prev
       if (!next) {
         setLiveTranscript("")
+        setConfirmedTranscript("")
         setLiveTranslation("")
         setLiveTranscriptLines([])
         setLiveTranslationLines([])
@@ -1482,6 +1499,10 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
 
   const formattedLiveTranslation = (() => {
     return normalizeLiveDisplay(liveTranslation, targetLanguage.code)
+  })()
+
+  const formattedConfirmedTranscript = (() => {
+    return normalizeLiveDisplay(confirmedTranscript, sourceLanguage.code)
   })()
 
   useEffect(() => {
@@ -1842,6 +1863,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         fromUserName: userName || t("call.unknownUser"),
         toUserId: callPeer.id,
         transcript: formattedLiveTranscript,
+        confirmedTranscript: formattedConfirmedTranscript,
         translation: formattedLiveTranslation,
         sourceLanguage: outgoingSource,
         targetLanguage: targetLanguage.code,
@@ -2262,10 +2284,12 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                 continue
               }
               const transcript = typeof payload.transcript === "string" ? payload.transcript : ""
+              const confirmedTranscript = typeof payload.confirmedTranscript === "string" ? payload.confirmedTranscript : ""
               const translation = typeof payload.translation === "string" ? payload.translation : ""
               const sourceLang = typeof payload.sourceLanguage === "string" ? payload.sourceLanguage : ""
 
               setRemoteLiveTranscript(transcript)
+              setRemoteConfirmedTranscript(confirmedTranscript)
 
               // Only update translation from signal if it's valid and matches our target language preference
               // Heuristic: If translation language is significantly different from our target, ignore it.
@@ -2690,6 +2714,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       } finally {
         setIsProcessing(false)
         setLiveTranscript("")
+        setConfirmedTranscript("")
         setLiveTranslation("")
         setLiveTranscriptLines([])
         setLiveTranslationLines([])
@@ -2899,7 +2924,19 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                     {!liveSpeechSupported ? (
                       <div className="text-xs text-muted-foreground">{t("voice.liveUnsupported")}</div>
                     ) : null}
-                    {/* Local live translation hidden as per user request */}
+                    {(callStatus === "active" && callLiveEnabled && liveTranscript.trim()) ? (
+                      <div className="mb-4">
+                        <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                          {userName || "我"}
+                        </div>
+                        <div className="text-base leading-relaxed whitespace-pre-wrap break-all">
+                          <span className="text-foreground font-bold">{confirmedTranscript}</span>
+                          <span className={isInterim ? "text-muted-foreground text-sm" : "text-foreground font-bold"}>
+                            {liveTranscript.slice(confirmedTranscript.length)}
+                          </span>
+                        </div>
+                      </div>
+                    ) : null}
                     {remoteLiveTranslation.trim() ? (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="order-2 md:order-1">
@@ -2914,7 +2951,10 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                             <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
                               {t("voice.originalTranscript")}
                             </div>
-                            <div className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">{remoteLiveTranscript}</div>
+                            <div className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                              <span className="text-foreground font-medium">{remoteConfirmedTranscript}</span>
+                              <span className="opacity-70">{remoteLiveTranscript.slice(remoteConfirmedTranscript.length)}</span>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -2930,7 +2970,10 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                           <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
                             {t("voice.originalTranscript")}
                           </div>
-                          <div className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">{remoteLiveTranscript}</div>
+                          <div className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                            <span className="text-foreground font-medium">{remoteConfirmedTranscript}</span>
+                            <span className="opacity-70">{remoteLiveTranscript.slice(remoteConfirmedTranscript.length)}</span>
+                          </div>
                         </div>
                       </div>
                     ) : null}
@@ -3087,6 +3130,28 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                     <div className="mt-1 w-max text-[10px] text-muted-foreground/60 font-medium whitespace-nowrap">
                       {t("language.hint", { source: sourceLanguage.name, target: targetLanguage.name })}
                     </div>
+                    {settings.autoPlayTranslations ? (
+                      <div className="mt-1 flex items-center gap-1">
+                        <Button
+                          variant={isTtsUnlocked ? "secondary" : "outline"}
+                          size="sm"
+                          className="h-7 px-2 text-[10px]"
+                          onClick={handleUnlockTts}
+                          disabled={!ttsSupported}
+                        >
+                          {isTtsUnlocked ? "语音已启用" : "启用语音"}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-[10px]"
+                          onClick={handleTestTts}
+                          disabled={!ttsSupported}
+                        >
+                          测试
+                        </Button>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="flex-1 flex flex-col gap-1 items-start">
