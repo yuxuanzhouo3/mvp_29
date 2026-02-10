@@ -610,7 +610,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         `voice_id=${voice_id}&` +
         `voice_format=${voice_format}&` +
         `needvad=${needvad}&` +
-        `vad_silence_time=3000&` +
+        `vad_silence_time=1200&` +
         `signature=${encodeURIComponent(signature)}`
 
       const ws = new WebSocket(wsUrl)
@@ -726,6 +726,9 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       void connectTencentAsr()
 
       // Android Native Bridge Support
+      // Only use native audio if specifically requested (e.g. for System Audio Capture feature)
+      // For normal voice chat, we prefer standard getUserMedia to avoid Screen Share prompt
+      /*
       if (typeof window !== "undefined" && window.mornspeakerStartSystemAudio && isMobile) {
         console.log("Starting Android Native Audio...")
         window.mornspeakerStartSystemAudio()
@@ -734,6 +737,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         setLiveSpeechSupported(true)
         return
       }
+      */
 
       let stream: MediaStream | null = callStatusRef.current === "active" ? callStreamRef.current : null
       let owned = false
