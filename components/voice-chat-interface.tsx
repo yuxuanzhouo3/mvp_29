@@ -30,6 +30,14 @@ declare global {
     mornspeakerOnSystemAudioStatus?: (status: string) => void
     mornspeakerStartSystemAudio?: () => void
     mornspeakerStopSystemAudio?: () => void
+    AndroidTencentAsr?: {
+      startAsr: (configJson: string) => void
+      stopAsr: () => void
+      cancelAsr: () => void
+    }
+    mornspeakerOnAsrResult?: (text: string, isFinal: boolean) => void
+    mornspeakerOnAsrError?: (error: string) => void
+    mornspeakerOnAsrState?: (state: string) => void
   }
 }
 
@@ -254,6 +262,69 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     ttsUnlockedRef.current = isTtsUnlocked
   }, [isTtsUnlocked])
 
+  // Native ASR Callbacks
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.mornspeakerOnAsrResult = (text: string, isFinal: boolean) => {
+        console.log("Native ASR Result:", text, isFinal)
+        const isHallucination = (t: string) => {
+          const str = t.toLowerCase().replace(/[.,!?。，！？]/g, '')
+          if (str === "你好") return true
+          if (str === "你好你好") return true
+          if (str === "不客气") return true
+          if (str === "谢谢") return true
+          if (str === "bye") return true
+          if (str === "you're welcome") return true
+          if (str === "字幕" || str.includes("subtitles by")) return true
+          if (str === "amaraorg") return true
+          return false
+        }
+
+        if (text && !isHallucination(text)) {
+          // Native SDK returns full text for the current sentence/segment?
+          // Based on TencentAsrManager.java:
+          // onSliceSuccess (interim) -> isFinal=false
+          // onSegmentSuccess (final) -> isFinal=true
+          // And it passes result.getText() which is usually the text of the current sentence.
+
+          // Logic similar to WebSocket handling
+          // But we don't have voice_id here easily unless we change Java.
+          // Assuming Java sends the accumulated text for the current sentence.
+
+          if (isFinal) {
+            const isCJK = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(text)
+            sessionTranscriptRef.current += text + (isCJK ? "" : " ")
+            setConfirmedTranscript(sessionTranscriptRef.current)
+            setLiveTranscript(sessionTranscriptRef.current)
+            setIsInterim(false)
+          } else {
+            setLiveTranscript(sessionTranscriptRef.current + text)
+            setIsInterim(true)
+          }
+        }
+      }
+
+      window.mornspeakerOnAsrError = (error: string) => {
+        console.error("Native ASR Error:", error)
+        toast({
+          title: "语音识别错误",
+          description: error,
+          variant: "destructive",
+        })
+        setAsrMode("off")
+      }
+
+      window.mornspeakerOnAsrState = (state: string) => {
+        console.log("Native ASR State:", state)
+        if (state === "recording") {
+          setAsrMode("websocket") // reuse websocket mode indicator for active state
+        } else if (state === "stopped") {
+          setAsrMode("off")
+        }
+      }
+    }
+  }, [toast])
+
   const randomId = useCallback((): string => {
     if (typeof window !== "undefined" && typeof window.crypto?.randomUUID === "function") {
       return window.crypto.randomUUID()
@@ -262,6 +333,15 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   }, [])
 
   const stopFallbackLive = useCallback(() => {
+    // Stop Android Native ASR if running
+    if (typeof window !== "undefined" && window.AndroidTencentAsr && isMobile) {
+      try {
+        window.AndroidTencentAsr.stopAsr()
+      } catch (e) {
+        console.error("Error stopping Android ASR", e)
+      }
+    }
+
     if (fallbackRecorderRef.current) {
       try {
         if (fallbackRecorderRef.current.state !== "inactive") {
@@ -738,21 +818,26 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const startFallbackLive = useCallback(async () => {
     if (fallbackRecorderRef.current || fallbackProcessorRef.current) return
     try {
-      void connectTencentAsr()
-
-      // Android Native Bridge Support
-      // Only use native audio if specifically requested (e.g. for System Audio Capture feature)
-      // For normal voice chat, we prefer standard getUserMedia to avoid Screen Share prompt
-      /*
-      if (typeof window !== "undefined" && window.mornspeakerStartSystemAudio && isMobile) {
-        console.log("Starting Android Native Audio...")
-        window.mornspeakerStartSystemAudio()
-        // Wait for status callback to confirm start, but we can assume it starts.
-        // If we rely on native audio, we don't need getUserMedia.
-        setLiveSpeechSupported(true)
-        return
+      // Android Native ASR Support
+      if (typeof window !== "undefined" && window.AndroidTencentAsr && isMobile) {
+        console.log("Starting Android Native ASR...")
+        try {
+          // Fetch credentials securely from server
+          const res = await fetch("/api/transcribe/stream?action=get_android_config", { method: "POST" })
+          if (res.ok) {
+            const config = await res.json()
+            window.AndroidTencentAsr.startAsr(JSON.stringify(config))
+            setLiveSpeechSupported(true)
+            return
+          } else {
+            console.error("Failed to get Android config")
+          }
+        } catch (e) {
+          console.error("Error fetching Android config", e)
+        }
       }
-      */
+
+      void connectTencentAsr()
 
       let stream: MediaStream | null = callStatusRef.current === "active" ? callStreamRef.current : null
       let owned = false

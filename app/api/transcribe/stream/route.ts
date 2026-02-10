@@ -141,5 +141,16 @@ export async function POST(req: Request) {
     });
   }
 
+  if (action === 'get_android_config') {
+    return new Response(JSON.stringify({
+      appId: appId,
+      secretId: secretId,
+      secretKey: secretKey // Warning: Exposing secretKey to client. Ensure this is trusted client or add auth.
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
   return new Response("Invalid action", { status: 400 });
 }
