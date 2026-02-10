@@ -24,6 +24,15 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useTextToSpeech } from "@/hooks/use-text-to-speech"
 
+declare global {
+  interface Window {
+    __medianPushNativeAudio?: (base64: string, sampleRate: number, channels: number) => void
+    mornspeakerOnSystemAudioStatus?: (status: string) => void
+    mornspeakerStartSystemAudio?: () => void
+    mornspeakerStopSystemAudio?: () => void
+  }
+}
+
 export type Language = {
   code: string
   name: string
@@ -489,6 +498,91 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const sessionTranscriptRef = useRef<string>("")
   const lastVoiceIdRef = useRef<string>("")
   const lastReceivedTextRef = useRef<string>("")
+  const nativeAudioActiveRef = useRef(false)
+
+  // Handle Android Native Audio Bridge
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    // Callback for native audio data (base64 PCM 16k 16bit mono)
+    window.__medianPushNativeAudio = (base64: string, sampleRate: number, channels: number) => {
+      try {
+        const binaryString = window.atob(base64)
+        const len = binaryString.length
+        const bytes = new Uint8Array(len)
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i)
+        }
+        // Convert Uint8Array to Int16Array (PCM 16bit)
+        // Note: Android AudioRecord (ENCODING_PCM_16BIT) is usually Little Endian
+        const pcmData = new Int16Array(bytes.buffer)
+
+        // Simple VAD (Voice Activity Detection) for Android Native Audio
+        let sumSq = 0
+        for (let i = 0; i < pcmData.length; i++) {
+          const sample = pcmData[i] / 32768.0
+          sumSq += sample * sample
+        }
+        const rms = Math.sqrt(sumSq / pcmData.length)
+        // Threshold: 0.01 is about -40dB, reasonable for speech
+        if (rms < 0.01) return
+
+        // Push to ASR logic
+        const ws = tencentWsRef.current
+        const useWs = isConnectingWsRef.current || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))
+
+        if (useWs) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            // Send buffered data first if any
+            if (audioBufferLenRef.current > 0) {
+              const totalLen = audioBufferLenRef.current
+              const merged = new Int16Array(totalLen)
+              let offset = 0
+              for (const chunk of audioBufferRef.current) {
+                merged.set(chunk, offset)
+                offset += chunk.length
+              }
+              ws.send(merged.buffer)
+              audioBufferRef.current = []
+              audioBufferLenRef.current = 0
+            }
+            ws.send(pcmData.buffer)
+          } else {
+            // Buffer while connecting
+            audioBufferRef.current.push(pcmData)
+            audioBufferLenRef.current += pcmData.length
+            if (audioBufferLenRef.current > 16000 * 5) { // 5s buffer
+              const removeCount = audioBufferRef.current[0].length
+              audioBufferRef.current.shift()
+              audioBufferLenRef.current -= removeCount
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Native audio decode error", e)
+      }
+    }
+
+    // Callback for native audio status
+    window.mornspeakerOnSystemAudioStatus = (status: string) => {
+      console.log("Native Audio Status:", status)
+      if (status === "running" || status === "recording_started") {
+        nativeAudioActiveRef.current = true
+        toast({
+          title: "Android 原生录音已启动",
+          description: "正在使用原生音频通道 (16000Hz PCM)",
+        })
+      } else if (status.startsWith("error") || status === "projection_stopped") {
+        nativeAudioActiveRef.current = false
+        // If native fails, maybe fallback to web?
+      }
+    }
+
+    return () => {
+      // Cleanup if needed
+      // window.__medianPushNativeAudio = undefined
+    }
+  }, [toast])
 
   const connectTencentAsr = useCallback(async () => {
     if (tencentWsRef.current?.readyState === WebSocket.OPEN) {
@@ -630,6 +724,16 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     if (fallbackRecorderRef.current || fallbackProcessorRef.current) return
     try {
       void connectTencentAsr()
+
+      // Android Native Bridge Support
+      if (typeof window !== "undefined" && window.mornspeakerStartSystemAudio && isMobile) {
+        console.log("Starting Android Native Audio...")
+        window.mornspeakerStartSystemAudio()
+        // Wait for status callback to confirm start, but we can assume it starts.
+        // If we rely on native audio, we don't need getUserMedia.
+        setLiveSpeechSupported(true)
+        return
+      }
 
       let stream: MediaStream | null = callStatusRef.current === "active" ? callStreamRef.current : null
       let owned = false
@@ -781,7 +885,11 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         return
       }
 
-      const audioContext = new AudioContextCtor()
+      // 强制设置采样率为 16000Hz，并优化延迟
+      const audioContext = new AudioContextCtor({
+        sampleRate: 16000,
+        latencyHint: "interactive",
+      })
       fallbackAudioContextRef.current = audioContext
       const source = audioContext.createMediaStreamSource(stream)
       const processor = audioContext.createScriptProcessor(4096, 1, 1)
@@ -819,6 +927,15 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         const useWs = isConnectingWsRef.current || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))
 
         if (useWs) {
+          // Simple VAD for Web Audio WebSocket path
+          let sumSq = 0
+          for (let i = 0; i < input.length; i++) {
+            sumSq += input[i] * input[i]
+          }
+          const rms = Math.sqrt(sumSq / input.length)
+          const silenceThreshold = isMobile ? 0.005 : 0.01 // Slightly more sensitive than HTTP fallback
+          if (rms < silenceThreshold) return
+
           if (ws && ws.readyState === WebSocket.OPEN) {
             // Send buffered data first if any
             if (audioBufferLenRef.current > 0) {
