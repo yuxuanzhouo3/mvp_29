@@ -712,18 +712,57 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
               // 但这通常是后端 VAD 问题，我们已经在后端调整了 vad_silence_time
               // 这里主要处理显示层的拼接
 
-              lastReceivedTextRef.current = text
-              setLiveTranscript(sessionTranscriptRef.current + text)
+              // 过滤掉单独的语气词或碎片（例如 "哦。" "嗯。"），防止破坏长句体验
+              const isFragment = (t: string) => {
+                const clean = t.replace(/[.,!?。，！？]/g, '').trim()
+                return clean.length <= 1 && /[\u4e00-\u9fa5]/.test(clean)
+              }
+
+              if (isFragment(text) && !isFinal) {
+                // 如果是中间结果且只是一个字，先不显示，防止闪烁
+                // 但如果它是 final，还是得显示（除非我们想激进地过滤掉）
+              } else {
+                lastReceivedTextRef.current = text
+                setLiveTranscript(sessionTranscriptRef.current + text)
+              }
+
               setIsInterim(!isFinal)
 
               if (isFinal) {
                 const isCJK = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(text)
-                // 只有当 sessionTranscriptRef 不包含当前的 text 时才追加
-                // 简单的去重防止重复追加
-                if (!sessionTranscriptRef.current.endsWith(text) && !sessionTranscriptRef.current.endsWith(text + " ")) {
-                  sessionTranscriptRef.current += text + (isCJK ? "" : " ")
-                  setConfirmedTranscript(sessionTranscriptRef.current)
+
+                // 激进的去重策略：
+                // 1. 如果当前句子的开头包含在上一句的结尾（重叠），则去除重叠部分
+                // 2. 如果当前句子就是上一句的子集，则忽略
+
+                let cleanText = text
+                const session = sessionTranscriptRef.current.trim()
+
+                // 去除 text 开头的标点
+                cleanText = cleanText.replace(/^[.,!?。，！？]+/, '')
+
+                // 检查重叠
+                // 例如 session="我今天。" text="吃的馒头。" -> 正常拼接
+                // 例如 session="我今天。" text="今天吃的馒头。" -> 去掉 "今天"
+
+                // 简单的后缀匹配去重
+                for (let i = Math.min(cleanText.length, 10); i > 0; i--) {
+                  const substr = cleanText.substring(0, i)
+                  if (session.endsWith(substr) || session.endsWith(substr + "。") || session.endsWith(substr + "，")) {
+                    cleanText = cleanText.substring(i)
+                    break
+                  }
                 }
+
+                // 如果清理后还有内容，且不完全重复
+                if (cleanText && !session.endsWith(cleanText)) {
+                  // 再次检查是否仅仅是一个语气词碎片
+                  if (!isFragment(cleanText)) {
+                    sessionTranscriptRef.current += cleanText + (isCJK ? "" : " ")
+                    setConfirmedTranscript(sessionTranscriptRef.current)
+                  }
+                }
+
                 lastReceivedTextRef.current = "" // 清空当前句暂存
               }
             }
