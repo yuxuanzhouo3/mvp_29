@@ -604,7 +604,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         const errData = await res.json().catch(() => ({}))
         throw new Error(errData.error || "Failed to get signature")
       }
-      const { signature, secretid, timestamp, expired, nonce, engine_model_type, voice_id, voice_format, needvad, appid } = await res.json()
+      const { signature, secretid, timestamp, expired, nonce, engine_model_type, voice_id, voice_format, needvad, appid, vad_silence_time, punc, filter_dirty, filter_modal, filter_punc, convert_num_mode, word_info } = await res.json()
 
       // 2. Construct WebSocket URL
       const wsUrl = `wss://asr.cloud.tencent.com/asr/v2/${appid}?` +
@@ -616,13 +616,13 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         `voice_id=${voice_id}&` +
         `voice_format=${voice_format}&` +
         `needvad=${needvad}&` +
-        `vad_silence_time=600&` +
-        `punc=0&` +
-        `filter_dirty=1&` +
-        `filter_modal=1&` +
-        `filter_punc=0&` +
-        `convert_num_mode=1&` +
-        `word_info=0&` +
+        `vad_silence_time=${vad_silence_time ?? 800}&` +
+        `punc=${punc ?? 0}&` +
+        `filter_dirty=${filter_dirty ?? 1}&` +
+        `filter_modal=${filter_modal ?? 1}&` +
+        `filter_punc=${filter_punc ?? 0}&` +
+        `convert_num_mode=${convert_num_mode ?? 1}&` +
+        `word_info=${word_info ?? 0}&` +
         `signature=${encodeURIComponent(signature)}`
 
       const ws = new WebSocket(wsUrl)
@@ -1834,7 +1834,17 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       ttsDeferredTimerRef.current = setTimeout(() => {
         if (ttsDeferredTextRef.current !== text) return
         if (remoteLastSpokenTextRef.current === text) return
-        if (ttsSupported && !ttsUnlockedRef.current) return
+        if (ttsSupported && !ttsUnlockedRef.current) {
+          pendingTtsRef.current = { text, lang: targetLanguage.code }
+          if (!ttsUnlockPromptedRef.current) {
+            ttsUnlockPromptedRef.current = true
+            toast({
+              title: "点击屏幕启用语音播放",
+              description: "需要先点击页面，系统才允许播放语音。",
+            })
+          }
+          return
+        }
         speak(text, targetLanguage.code)
         remoteSpokenTranslationRef.current = ttsDeferredFullRef.current
         remoteLastSpokenTextRef.current = text

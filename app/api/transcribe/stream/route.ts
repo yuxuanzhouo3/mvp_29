@@ -130,9 +130,15 @@ export async function POST(req: Request) {
       'nonce': Math.floor(Math.random() * 100000),
       'engine_model_type': '16k_zh',
       'voice_id': Math.random().toString(36).substring(2),
-      'voice_format': 1, // 1: wav, 8: spex
+      'voice_format': 8, // 8: PCM (Raw Audio), 1: WAV
       'needvad': 1,
-      'vad_silence_time': 2000, // Increased to 2000ms to prevent sentence fragmentation
+      'vad_silence_time': 800, // Balanced for responsiveness
+      'punc': 0,
+      'filter_dirty': 1,
+      'filter_modal': 1,
+      'filter_punc': 0,
+      'convert_num_mode': 1,
+      'word_info': 0,
     };
 
     const signature = getAuthSignature(params, secretKey);
