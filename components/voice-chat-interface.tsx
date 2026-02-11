@@ -692,6 +692,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                 lastVoiceIdRef.current = currentVoiceId
               }
 
+              // 如果 voice_id 变了，说明上一句话结束了，需要把上一句话的最终结果（lastReceivedTextRef）存入 sessionTranscriptRef
               if (lastVoiceIdRef.current !== currentVoiceId) {
                 if (lastReceivedTextRef.current) {
                   const isCJK = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(lastReceivedTextRef.current)
@@ -702,13 +703,35 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                 lastReceivedTextRef.current = ""
               }
 
+              // 只有当这句话是 final 的时候，或者它是 interim 但比上一次长的时候才更新
+              // 腾讯云的 voice_text_str 在 interim 阶段是不断变长的
+              // 在 final 阶段是最终结果
+
               lastReceivedTextRef.current = text
               setLiveTranscript(sessionTranscriptRef.current + text)
               setIsInterim(!isFinal)
 
+              // 关键修复：当 isFinal 为 true 时，不要立即追加到 sessionTranscriptRef！
+              // 而是等待下一次 voice_id 变化时再追加。
+              // 否则会导致：
+              // 1. isFinal=true, text="想看电视" -> 追加到 session -> session="想看电视"
+              // 2. 下一次 interim, voice_id 还没变 -> 显示 session + text -> "想看电视" + "想看电视"
+              // 
+              // 或者：
+              // 腾讯云可能会发多个 final 包？或者在 final 之后还会发同一个 voice_id 的包？
+              // 观察日志发现，有时 final 包发完，voice_id 会变。
+              // 
+              // 如果 isFinal=true，说明这句话结束了。我们可以立即“结算”这句话，并清空 lastReceivedTextRef，
+              // 同时更新 lastVoiceIdRef，防止下一次 voice_id 变化时重复追加。
+
               if (isFinal) {
                 const isCJK = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(text)
-                setConfirmedTranscript(sessionTranscriptRef.current + text + (isCJK ? "" : " "))
+                sessionTranscriptRef.current += text + (isCJK ? "" : " ")
+                setConfirmedTranscript(sessionTranscriptRef.current)
+                lastReceivedTextRef.current = "" // 清空当前句暂存
+                // 注意：这里不要改变 lastVoiceIdRef，因为下一次消息可能还是这个 voice_id（虽然不太可能，但为了保险）
+                // 实际上，如果 isFinal=true，下一个包通常是新 voice_id。
+                // 如果我们清空了 lastReceivedTextRef，那么下一次 voice_id 变化时的那个 check 就不会重复追加了。
               }
             }
           }
