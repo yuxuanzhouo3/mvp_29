@@ -616,7 +616,13 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         `voice_id=${voice_id}&` +
         `voice_format=${voice_format}&` +
         `needvad=${needvad}&` +
-        `vad_silence_time=1200&` +
+        `vad_silence_time=600&` +
+        `punc=0&` +
+        `filter_dirty=1&` +
+        `filter_modal=1&` +
+        `filter_punc=0&` +
+        `convert_num_mode=1&` +
+        `word_info=0&` +
         `signature=${encodeURIComponent(signature)}`
 
       const ws = new WebSocket(wsUrl)
