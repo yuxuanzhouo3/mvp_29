@@ -585,90 +585,6 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const lastReceivedTextRef = useRef<string>("")
   const nativeAudioActiveRef = useRef(false)
 
-  // Handle Android Native Audio Bridge
-  useEffect(() => {
-    if (typeof window === "undefined") return
-
-    // Callback for native audio data (base64 PCM 16k 16bit mono)
-    window.__medianPushNativeAudio = (base64: string, sampleRate: number, channels: number) => {
-      try {
-        const binaryString = window.atob(base64)
-        const len = binaryString.length
-        const bytes = new Uint8Array(len)
-        for (let i = 0; i < len; i++) {
-          bytes[i] = binaryString.charCodeAt(i)
-        }
-        // Convert Uint8Array to Int16Array (PCM 16bit)
-        // Note: Android AudioRecord (ENCODING_PCM_16BIT) is usually Little Endian
-        const pcmData = new Int16Array(bytes.buffer)
-
-        // Simple VAD (Voice Activity Detection) for Android Native Audio
-        let sumSq = 0
-        for (let i = 0; i < pcmData.length; i++) {
-          const sample = pcmData[i] / 32768.0
-          sumSq += sample * sample
-        }
-        const rms = Math.sqrt(sumSq / pcmData.length)
-        // Threshold: 0.01 is about -40dB, reasonable for speech
-        if (rms < 0.01) return
-
-        // Push to ASR logic
-        const ws = tencentWsRef.current
-        const useWs = isConnectingWsRef.current || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))
-
-        if (useWs) {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            // Send buffered data first if any
-            if (audioBufferLenRef.current > 0) {
-              const totalLen = audioBufferLenRef.current
-              const merged = new Int16Array(totalLen)
-              let offset = 0
-              for (const chunk of audioBufferRef.current) {
-                merged.set(chunk, offset)
-                offset += chunk.length
-              }
-              ws.send(merged.buffer)
-              audioBufferRef.current = []
-              audioBufferLenRef.current = 0
-            }
-            ws.send(pcmData.buffer)
-          } else {
-            // Buffer while connecting
-            audioBufferRef.current.push(pcmData)
-            audioBufferLenRef.current += pcmData.length
-            if (audioBufferLenRef.current > 16000 * 5) { // 5s buffer
-              const removeCount = audioBufferRef.current[0].length
-              audioBufferRef.current.shift()
-              audioBufferLenRef.current -= removeCount
-            }
-          }
-        }
-      } catch (e) {
-        console.error("Native audio decode error", e)
-      }
-    }
-
-    // Callback for native audio status
-    window.mornspeakerOnSystemAudioStatus = (status: string) => {
-      console.log("Native Audio Status:", status)
-      if (status === "running" || status === "recording_started") {
-        nativeAudioActiveRef.current = true
-        toast({
-          title: "Android 原生录音已启动",
-          description: "正在使用原生音频通道 (16000Hz PCM)",
-        })
-      } else if (status.startsWith("error") || status === "projection_stopped") {
-        nativeAudioActiveRef.current = false
-        // If native fails, maybe fallback to web?
-      }
-    }
-
-    return () => {
-      // Cleanup if needed
-      // window.__medianPushNativeAudio = undefined
-    }
-  }, [toast])
-
   const connectTencentAsr = useCallback(async () => {
     if (tencentWsRef.current?.readyState === WebSocket.OPEN) {
       setAsrMode("websocket")
@@ -814,6 +730,102 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       return null
     }
   }, [toast])
+
+  // Handle Android Native Audio Bridge
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    // Callback for native audio data (base64 PCM 16k 16bit mono)
+    window.__medianPushNativeAudio = (base64: string, sampleRate: number, channels: number) => {
+      try {
+        const binaryString = window.atob(base64)
+        const len = binaryString.length
+        const bytes = new Uint8Array(len)
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i)
+        }
+        // Convert Uint8Array to Int16Array (PCM 16bit)
+        // Note: Android AudioRecord (ENCODING_PCM_16BIT) is usually Little Endian
+        const pcmData = new Int16Array(bytes.buffer)
+
+        // Simple VAD (Voice Activity Detection) for Android Native Audio
+        let sumSq = 0
+        for (let i = 0; i < pcmData.length; i++) {
+          const sample = pcmData[i] / 32768.0
+          sumSq += sample * sample
+        }
+        const rms = Math.sqrt(sumSq / pcmData.length)
+        // Threshold: 0.01 is about -40dB, reasonable for speech
+        if (rms < 0.01) return
+
+        // Push to ASR logic
+        const ws = tencentWsRef.current
+        const wsReady = ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+        const useWs = isConnectingWsRef.current || wsReady
+
+        if (useWs) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            // Send buffered data first if any
+            if (audioBufferLenRef.current > 0) {
+              const totalLen = audioBufferLenRef.current
+              const merged = new Int16Array(totalLen)
+              let offset = 0
+              for (const chunk of audioBufferRef.current) {
+                merged.set(chunk, offset)
+                offset += chunk.length
+              }
+              ws.send(merged.buffer)
+              audioBufferRef.current = []
+              audioBufferLenRef.current = 0
+            }
+            ws.send(pcmData.buffer)
+          } else {
+            // Buffer while connecting
+            audioBufferRef.current.push(pcmData)
+            audioBufferLenRef.current += pcmData.length
+            if (audioBufferLenRef.current > 16000 * 5) { // 5s buffer
+              const removeCount = audioBufferRef.current[0].length
+              audioBufferRef.current.shift()
+              audioBufferLenRef.current -= removeCount
+            }
+          }
+        } else if (liveListenRef.current) {
+          if (!isConnectingWsRef.current) {
+            void connectTencentAsr()
+          }
+          audioBufferRef.current.push(pcmData)
+          audioBufferLenRef.current += pcmData.length
+          if (audioBufferLenRef.current > 16000 * 5) {
+            const removeCount = audioBufferRef.current[0].length
+            audioBufferRef.current.shift()
+            audioBufferLenRef.current -= removeCount
+          }
+        }
+      } catch (e) {
+        console.error("Native audio decode error", e)
+      }
+    }
+
+    // Callback for native audio status
+    window.mornspeakerOnSystemAudioStatus = (status: string) => {
+      console.log("Native Audio Status:", status)
+      if (status === "running" || status === "recording_started") {
+        nativeAudioActiveRef.current = true
+        toast({
+          title: "Android 原生录音已启动",
+          description: "正在使用原生音频通道 (16000Hz PCM)",
+        })
+      } else if (status.startsWith("error") || status === "projection_stopped") {
+        nativeAudioActiveRef.current = false
+        // If native fails, maybe fallback to web?
+      }
+    }
+
+    return () => {
+      // Cleanup if needed
+      // window.__medianPushNativeAudio = undefined
+    }
+  }, [connectTencentAsr, toast])
 
   const startFallbackLive = useCallback(async () => {
     if (fallbackRecorderRef.current || fallbackProcessorRef.current) return
