@@ -20,9 +20,14 @@ function buildSignature(params: Record<string, string | number>, appId: string, 
 
 export async function GET(req: Request) {
   try {
-    const appId = resolveEnvValue("ASR_APP_ID", "TENCENT_ASR_APP_ID")
+    let appId = resolveEnvValue("ASR_APP_ID", "TENCENT_ASR_APP_ID")
     const secretId = resolveEnvValue("ASR_SECRET_ID", "TENCENT_ASR_SECRET_ID")
     const secretKey = resolveEnvValue("ASR_SECRET_KEY", "TENCENT_ASR_SECRET_KEY")
+
+    // Update AppID to the correct one if missing or using the old Account ID
+    if (!appId || appId === "100044870853") {
+      appId = "1385410663";
+    }
 
     if (!appId || !secretId || !secretKey) {
       return Response.json({ error: "Missing Tencent ASR credentials" }, { status: 500 })

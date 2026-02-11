@@ -76,6 +76,11 @@ export async function POST(req: Request) {
   // If we can't get it, we return a helpful error to the frontend which will be logged.
   let appId = resolveEnvValue("TENCENT_APP_ID", "TENCENT_APP_ID");
 
+  // Update AppID to the correct one if missing or using the old Account ID
+  if (!appId || appId === "100044870853") {
+    appId = "1385410663";
+  }
+
   if (!secretId || !secretKey) {
     return new Response(JSON.stringify({ error: "Missing Tencent Cloud credentials (SecretId/SecretKey)" }), { status: 500 });
   }
