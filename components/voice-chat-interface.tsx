@@ -378,8 +378,11 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
 
   const resetCallState = useCallback(() => {
     setCallStatus("idle")
+    callStatusRef.current = "idle"
     setCallPeer(null)
+    callPeerRef.current = null
     setCallId(null)
+    callIdRef.current = null
     setIncomingCallOpen(false)
     setIsCallStreaming(false)
     setCallDurationSec(0)
@@ -547,6 +550,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
+        voiceIsolation: true,
+        latency: 0,
         channelCount: 1,
         sampleRate: 48000,
         sampleSize: 16,
@@ -859,6 +864,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
+            voiceIsolation: true,
+            latency: 0,
             channelCount: 1,
             sampleRate: 48000,
             sampleSize: 16,
