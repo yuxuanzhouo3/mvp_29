@@ -1863,8 +1863,9 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         }
       })
     }
-    window.addEventListener("pointerdown", tryUnlock, { passive: true })
-    return () => window.removeEventListener("pointerdown", tryUnlock)
+    const events = ["pointerdown", "touchstart", "click", "keydown"] as const
+    events.forEach((e) => window.addEventListener(e, tryUnlock, { passive: true }))
+    return () => events.forEach((e) => window.removeEventListener(e, tryUnlock))
   }, [speak, ttsSupported, unlockTts])
 
   useEffect(() => {
@@ -2276,6 +2277,16 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             const fromName = String(payload.fromUserName || fromUser?.name || t("call.unknownUser"))
             if (type === "call_invite") {
               const incomingId = String(payload.callId || "")
+
+              // Fix for "single call limitation":
+              // If we receive an invite from the same user we are currently in a "call" with (or trying to call),
+              // it means the previous session is likely dead/stuck on their end.
+              // We should force reset our state to accept the new call.
+              if (callStatusRef.current !== "idle" && callPeerRef.current?.id === fromId) {
+                console.log("[v0] Received invite from current peer, resetting stuck state")
+                resetCallState()
+              }
+
               if (callStatusRef.current !== "idle") {
                 try {
                   await sendSignal(fromId, {
