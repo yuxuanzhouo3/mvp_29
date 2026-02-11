@@ -132,7 +132,7 @@ export async function POST(req: Request) {
       'voice_id': Math.random().toString(36).substring(2),
       'voice_format': 8, // 8: PCM (Raw Audio), 1: WAV
       'needvad': 1,
-      'vad_silence_time': 800, // Balanced for responsiveness
+      'vad_silence_time': 1500, // Increased to 1500ms to reduce fragmentation
       'punc': 0,
       'filter_dirty': 1,
       'filter_modal': 1,

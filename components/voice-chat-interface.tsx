@@ -1057,6 +1057,10 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         const useWs = isConnectingWsRef.current || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))
 
         if (useWs) {
+          // We send all audio data to WebSocket to ensure server-side VAD (vad_silence_time) works correctly.
+          // Dropping silence here would cause the server to see a continuous stream of speech,
+          // breaking the silence detection and sentence segmentation.
+          /*
           // Simple VAD for Web Audio WebSocket path
           let sumSq = 0
           for (let i = 0; i < input.length; i++) {
@@ -1065,6 +1069,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           const rms = Math.sqrt(sumSq / input.length)
           const silenceThreshold = isMobile ? 0.005 : 0.01 // Slightly more sensitive than HTTP fallback
           if (rms < silenceThreshold) return
+          */
 
           if (ws && ws.readyState === WebSocket.OPEN) {
             // Send buffered data first if any
@@ -1892,7 +1897,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   }, [speak, ttsSupported, unlockTts])
 
   useEffect(() => {
-    if (!isMobile || !settings.autoPlayTranslations) return
+    if (!settings.autoPlayTranslations) return
     if (ttsSupported) return
     if (ttsUnsupportedNotifiedRef.current) return
     ttsUnsupportedNotifiedRef.current = true
@@ -1901,7 +1906,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       description: "请使用系统浏览器或关闭静音模式后再试。",
       variant: "destructive",
     })
-  }, [isMobile, settings.autoPlayTranslations, toast, ttsSupported])
+  }, [settings.autoPlayTranslations, toast, ttsSupported])
 
   const handleUnlockTts = useCallback(async () => {
     if (!ttsSupported) {
