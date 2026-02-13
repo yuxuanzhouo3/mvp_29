@@ -7,12 +7,12 @@
   },
   "packageManager": "npm@10.9.2",
   "scripts": {
-    "dev": "next dev -H 0.0.0.0",
+    "dev": "next dev -H 0.0.0.0 --experimental-https --experimental-https-key .cert/localhost-key.pem --experimental-https-cert .cert/localhost-cert.pem",
     "build": "node scripts/adapt-schema.js && node -v && npm -v && prisma generate && next build",
     "vercel-build": "node -v && npm -v && prisma generate && next build",
     "start": "next start",
     "start:migrate": "npx prisma db push --accept-data-loss && next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -80,6 +80,8 @@
     "sonner": "^1.7.4",
     "tailwind-merge": "^2.5.5",
     "tailwindcss-animate": "^1.0.7",
+    "tls-sig-api-v2": "^1.0.2",
+    "trtc-sdk-v5": "^5.15.2",
     "vaul": "^1.1.2",
     "zod": "3.25.76"
   },

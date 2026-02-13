@@ -15,11 +15,8 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
   const { t } = useI18n()
   const router = useRouter()
   const { user, signOut } = useAuth()
-  const [clientHideFull, setClientHideFull] = useState(false)
-  const finalShowFull = useMemo(() => showFull && !clientHideFull, [showFull, clientHideFull])
-
-  useEffect(() => {
-    if (typeof window === "undefined") return
+  const clientHideFull = useMemo(() => {
+    if (typeof window === "undefined") return false
     const ua = navigator.userAgent.toLowerCase()
     const isApp =
       !!(window as any).median_status_checker ||
@@ -39,8 +36,9 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
       mpParam === "1" ||
       mpParam === "true" ||
       (window as any).__wxjs_environment === "miniprogram"
-    if (isApp || isMiniProgram) setClientHideFull(true)
+    return isApp || isMiniProgram
   }, [])
+  const finalShowFull = useMemo(() => showFull && !clientHideFull, [showFull, clientHideFull])
 
   const handleLogout = async () => {
     await signOut()

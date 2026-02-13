@@ -4,14 +4,14 @@ import { IncomingMessage } from 'http';
 import { WebSocket } from 'ws';
 
 // 腾讯云鉴权逻辑
-function getAuthSignature(params: Record<string, any>, secretKey: string) {
+function getAuthSignature(params: Record<string, any>, secretKey: string, appId: string) {
   const sortedKeys = Object.keys(params).sort();
   let strParam = '';
   for (const key of sortedKeys) {
     strParam += `${key}=${params[key]}&`;
   }
   strParam = strParam.slice(0, -1);
-  const signStr = `GETasr.cloud.tencent.com/asr/v2/16k_zh?${strParam}`;
+  const signStr = `GETasr.cloud.tencent.com/asr/v2/${appId}?${strParam}`;
 
   const signature = createHmac('sha1', secretKey).update(signStr).digest('base64');
   return signature;
@@ -74,11 +74,9 @@ export async function POST(req: Request) {
 
   // FIX: We will use a dummy AppId or try to parse it. 
   // If we can't get it, we return a helpful error to the frontend which will be logged.
-  let appId = resolveEnvValue("TENCENT_APP_ID", "TENCENT_APP_ID");
-
-  // Update AppID to the correct one if missing or using the old Account ID
-  if (!appId || appId === "100044870853") {
-    appId = "1385410663";
+  let appId = resolveEnvValue("TENCENT_ASR_APP_ID", "TENCENT_ASR_APP_ID");
+  if (!appId) {
+    appId = resolveEnvValue("TENCENT_APP_ID", "TENCENT_APP_ID");
   }
 
   if (!secretId || !secretKey) {
@@ -141,7 +139,7 @@ export async function POST(req: Request) {
       'word_info': 0,
     };
 
-    const signature = getAuthSignature(params, secretKey);
+    const signature = getAuthSignature(params, secretKey, appId);
     return new Response(JSON.stringify({
       signature,
       ...params,

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Pencil } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -38,16 +38,18 @@ export function EditAdDialog({ ad, onSaved }: { ad: EditableAd; onSaved?: (next:
     isActive: ad.isActive,
   })
 
-  useEffect(() => {
-    if (!open) return
-    setFormData({
-      slotKey: ad.slotKey,
-      title: ad.title,
-      imageUrl: ad.imageUrl || "",
-      linkUrl: ad.linkUrl || "",
-      isActive: ad.isActive,
-    })
-  }, [ad, open])
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      setFormData({
+        slotKey: ad.slotKey,
+        title: ad.title,
+        imageUrl: ad.imageUrl || "",
+        linkUrl: ad.linkUrl || "",
+        isActive: ad.isActive,
+      })
+    }
+    setOpen(nextOpen)
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -81,7 +83,7 @@ export function EditAdDialog({ ad, onSaved }: { ad: EditableAd; onSaved?: (next:
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button variant="outline" size="sm" className="bg-transparent">
           <Pencil className="h-4 w-4 mr-2" />
@@ -168,4 +170,3 @@ export function EditAdDialog({ ad, onSaved }: { ad: EditableAd; onSaved?: (next:
     </Dialog>
   )
 }
-

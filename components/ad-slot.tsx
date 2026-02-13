@@ -46,7 +46,13 @@ export function AdSlot({ slotKey, className, variant = "inline", limit = 1, fetc
       return data?.ads ?? []
     }
 
+    const updateAds = (nextAds: Ad[]) => {
+      setAds(nextAds)
+      setStartIndex(0)
+    }
+
     const run = async () => {
+      setIsLoading(true)
       const controller = new AbortController()
       abortControllerRef.current?.abort()
       abortControllerRef.current = controller
@@ -56,19 +62,20 @@ export function AdSlot({ slotKey, className, variant = "inline", limit = 1, fetc
           controller.signal,
         )
         if (bySlot.length > 0) {
-          setAds(bySlot)
+          updateAds(bySlot)
           return
         }
 
         const fallback = await fetchMany(`/api/ads?limit=${encodeURIComponent(String(resolvedFetchLimit))}`, controller.signal)
-        setAds(fallback)
+        updateAds(fallback)
       } catch {
-        setAds([])
+        updateAds([])
+      } finally {
+        setIsLoading(false)
       }
     }
 
-    setIsLoading(true)
-    void run().finally(() => setIsLoading(false))
+    void run()
 
     const handleFocus = () => {
       void run()
@@ -89,10 +96,6 @@ export function AdSlot({ slotKey, className, variant = "inline", limit = 1, fetc
       abortControllerRef.current?.abort()
     }
   }, [fetchLimit, limit, slotKey])
-
-  useEffect(() => {
-    setStartIndex(0)
-  }, [ads])
 
   useEffect(() => {
     const resolvedVisibleCount = Math.max(1, Math.min(6, Number.isFinite(limit) ? Math.floor(limit) : 1))

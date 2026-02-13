@@ -25,12 +25,10 @@ function PayResultContent() {
   const [order, setOrder] = useState<OrderInfo | null>(null)
   const [statusText, setStatusText] = useState("正在查询支付状态...")
   const [error, setError] = useState<string | null>(null)
+  const missingTradeNo = !outTradeNo
 
   useEffect(() => {
-    if (!outTradeNo) {
-      setError("缺少订单号")
-      return
-    }
+    if (!outTradeNo) return
 
     let active = true
     let attempts = 0
@@ -77,8 +75,8 @@ function PayResultContent() {
     <div className="min-h-screen flex items-center justify-center bg-background p-6">
       <div className="w-full max-w-md rounded-lg border border-border bg-card p-6 space-y-4">
         <div className="text-lg font-semibold">支付结果</div>
-        {error ? (
-          <div className="text-sm text-destructive">{error}</div>
+        {missingTradeNo || error ? (
+          <div className="text-sm text-destructive">{missingTradeNo ? "缺少订单号" : error}</div>
         ) : (
           <>
             <div className="text-sm text-muted-foreground">{statusText}</div>

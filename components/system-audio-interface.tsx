@@ -861,7 +861,7 @@ export function SystemAudioInterface() {
                   <AlertCircle className="h-4 w-4" />
                   <AlertTitle className="text-xs">使用说明</AlertTitle>
                   <AlertDescription className="text-xs leading-relaxed">
-                    点击"开始监听"后，请选择包含音频的<strong>浏览器标签页</strong>或<strong>整个屏幕</strong>，并务必勾选<strong>"分享音频"</strong>。
+                    点击&quot;开始监听&quot;后，请选择包含音频的<strong>浏览器标签页</strong>或<strong>整个屏幕</strong>，并务必勾选<strong>&quot;分享音频&quot;</strong>。
                   </AlertDescription>
                 </Alert>
 
@@ -992,7 +992,7 @@ export function SystemAudioInterface() {
                       等待开始监听
                     </p>
                     <p className="text-xs leading-relaxed">
-                      点击"开始监听"后，请选择包含音频的<span className="font-medium text-primary">浏览器标签页</span>或<span className="font-medium text-primary">整个屏幕</span>，并务必勾选<span className="font-medium text-primary">"分享音频"</span>。
+                      点击&quot;开始监听&quot;后，请选择包含音频的<span className="font-medium text-primary">浏览器标签页</span>或<span className="font-medium text-primary">整个屏幕</span>，并务必勾选<span className="font-medium text-primary">&quot;分享音频&quot;</span>。
                     </p>
                   </div>
                 </div>

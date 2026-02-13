@@ -18,26 +18,19 @@ function getFallbackLocale(): UiLocale {
 }
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
-  // 初始状态必须与服务端渲染一致，以避免 Hydration Mismatch
-  const [locale, setLocaleState] = useState<UiLocale>(getFallbackLocale())
-  const [isHydrated, setIsHydrated] = useState(false)
+  const [locale, setLocaleState] = useState<UiLocale>(() => {
+    if (typeof window === "undefined") return getFallbackLocale()
+    const stored = window.localStorage.getItem(STORAGE_KEY)
+    if (stored) return normalizeLocale(stored)
+    if (typeof navigator !== "undefined") return normalizeLocale(navigator.language)
+    return getFallbackLocale()
+  })
 
   const setLocale = useCallback((next: UiLocale) => {
     setLocaleState(next)
     if (typeof window !== "undefined") {
       window.localStorage.setItem(STORAGE_KEY, next)
     }
-  }, [])
-
-  // 在客户端挂载后，从 localStorage 或浏览器设置中恢复语言
-  useEffect(() => {
-    const stored = window.localStorage.getItem(STORAGE_KEY)
-    if (stored) {
-      setLocaleState(normalizeLocale(stored))
-    } else if (typeof navigator !== "undefined") {
-      setLocaleState(normalizeLocale(navigator.language))
-    }
-    setIsHydrated(true)
   }, [])
 
   const t = useCallback(

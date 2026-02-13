@@ -23,6 +23,9 @@ import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useTextToSpeech } from "@/hooks/use-text-to-speech"
+import TRTC from "trtc-sdk-v5"
+import { RealtimeTranscriber } from "trtc-sdk-v5/plugins/realtime-transcriber"
+import { TencentASR } from "@/lib/asr-client"
 
 declare global {
   interface Window {
@@ -233,7 +236,20 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const callQueueRef = useRef<Blob[]>([])
   const callProcessingRef = useRef(false)
   const callActiveRef = useRef(false)
-  const peerConnRef = useRef<RTCPeerConnection | null>(null)
+  const trtcRef = useRef<any>(null)
+  const tencentAsrRef = useRef<any>(null)
+  const aiTranscriberListenerRef = useRef<any>(null)
+  const aiTranscriberStateListenerRef = useRef<any>(null)
+  const aiTranscriberCustomListenerRef = useRef<any>(null)
+  const aiTranscriberRobotIdRef = useRef<string | null>(null)
+  const aiTranscriberTranslationRef = useRef<string>("")
+  const aiTranscriberSourceLangRef = useRef<string>("")
+  const aiTranscriberTargetLangRef = useRef<string>("")
+  const trtcUserIdRef = useRef<string | null>(null)
+  const trtcRoomIdRef = useRef<number | null>(null)
+  const [trtcTranscriberActive, setTrtcTranscriberActive] = useState(false)
+  const [trtcTranscriberTranslationActive, setTrtcTranscriberTranslationActive] = useState(false)
+  const trtcTranscriberActiveRef = useRef(false)
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null)
   const liveListenRef = useRef(false)
   const { speak, unlock: unlockTts, isSupported: ttsSupported, isUnlocked: isTtsUnlocked } = useTextToSpeech({
@@ -241,8 +257,10 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     volume: settings.speechVolume,
   })
   const remoteCommittedTranslationRef = useRef("")
+  const remoteCommittedTranscriptRef = useRef("")
   const remoteSpokenTranslationRef = useRef("")
   const remoteLastSpokenTextRef = useRef("")
+  const trtcCustomCaptionActiveRef = useRef(false)
   const ttsUnlockedRef = useRef(false)
   const ttsUnlockingRef = useRef(false)
   const ttsUnlockPromptedRef = useRef(false)
@@ -332,6 +350,36 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     return `call-${Math.random().toString(36).substring(2, 11)}`
   }, [])
 
+  const fallbackTrtcUserId = useCallback((value: string) => {
+    const input = typeof value === "string" ? value : String(value)
+    let hash1 = 2166136261
+    let hash2 = 2166136261 ^ 0xffffffff
+    for (let i = 0; i < input.length; i += 1) {
+      const code = input.charCodeAt(i)
+      hash1 = Math.imul(hash1 ^ code, 16777619) >>> 0
+      hash2 = Math.imul(hash2 ^ (code + 2654435761), 16777619) >>> 0
+    }
+    const part1 = hash1.toString(16).padStart(8, "0")
+    const part2 = hash2.toString(16).padStart(8, "0")
+    return (part1 + part2 + part1 + part2).slice(0, 32)
+  }, [])
+
+  const getTrtcUserId = useCallback(async (userId: string) => {
+    const subtle = globalThis.crypto?.subtle
+    if (subtle && typeof TextEncoder !== "undefined") {
+      try {
+        const msgUint8 = new TextEncoder().encode(userId)
+        const hashBuffer = await subtle.digest("SHA-256", msgUint8)
+        const hashArray = Array.from(new Uint8Array(hashBuffer))
+        const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("")
+        return hashHex.substring(0, 32)
+      } catch {
+        return fallbackTrtcUserId(userId)
+      }
+    }
+    return fallbackTrtcUserId(userId)
+  }, [fallbackTrtcUserId])
+
   const stopFallbackLive = useCallback(() => {
     // Stop Android Native ASR if running
     if (typeof window !== "undefined" && window.AndroidTencentAsr && isMobile) {
@@ -376,6 +424,98 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     fallbackBufferedSamplesRef.current = 0
   }, [])
 
+  const stopTrtcRealtimeTranscriber = useCallback(async () => {
+    const trtc = trtcRef.current
+    const robotId = aiTranscriberRobotIdRef.current
+    if (trtc && robotId && trtcTranscriberActiveRef.current) {
+      try {
+        await trtc.stopPlugin("RealtimeTranscriber", { transcriberRobotId: robotId })
+      } catch { }
+    }
+    aiTranscriberRobotIdRef.current = null
+    aiTranscriberTranslationRef.current = ""
+    aiTranscriberSourceLangRef.current = ""
+    aiTranscriberTargetLangRef.current = ""
+    trtcTranscriberActiveRef.current = false
+    setTrtcTranscriberActive(false)
+    setTrtcTranscriberTranslationActive(false)
+    trtcCustomCaptionActiveRef.current = false
+  }, [])
+
+
+  const cleanupTrtc = useCallback(async () => {
+    const trtc = trtcRef.current
+    if (!trtc) return
+    if (aiTranscriberListenerRef.current) {
+      trtc.off(TRTC.EVENT.REALTIME_TRANSCRIBER_MESSAGE, aiTranscriberListenerRef.current)
+      aiTranscriberListenerRef.current = null
+    }
+    if (aiTranscriberStateListenerRef.current) {
+      trtc.off(TRTC.EVENT.REALTIME_TRANSCRIBER_STATE_CHANGED, aiTranscriberStateListenerRef.current)
+      aiTranscriberStateListenerRef.current = null
+    }
+    if (aiTranscriberCustomListenerRef.current) {
+      trtc.off(TRTC.EVENT.CUSTOM_MESSAGE, aiTranscriberCustomListenerRef.current)
+      aiTranscriberCustomListenerRef.current = null
+    }
+    await stopTrtcRealtimeTranscriber()
+    try {
+      trtc.stopLocalAudio()
+    } catch { }
+    try {
+      await trtc.exitRoom()
+    } catch { }
+    try {
+      trtc.destroy()
+    } catch { }
+    trtcRef.current = null
+    trtcUserIdRef.current = null
+    trtcRoomIdRef.current = null
+  }, [stopTrtcRealtimeTranscriber])
+
+  const startTrtcRealtimeTranscriber = useCallback(async (options: {
+    sourceLanguage: string
+    targetLanguage?: string
+    roomId: number
+    userId: string
+  }) => {
+    const trtc = trtcRef.current
+    if (!trtc) return false
+    const normalize = (value: string) => {
+      const raw = typeof value === "string" ? value.trim() : ""
+      const normalized = raw.replaceAll("_", "-")
+      return (normalized.split("-")[0] ?? normalized).toLowerCase()
+    }
+    const sourceLanguage = normalize(options.sourceLanguage)
+    const targetLanguage = options.targetLanguage ? normalize(options.targetLanguage) : ""
+    const robotId = `transcriber_${options.roomId}_robot_${options.userId}`
+    aiTranscriberRobotIdRef.current = robotId
+    aiTranscriberSourceLangRef.current = sourceLanguage
+    aiTranscriberTargetLangRef.current = targetLanguage
+    try {
+      await trtc.startPlugin("RealtimeTranscriber", {
+        sourceLanguage,
+        translationLanguages: targetLanguage ? [targetLanguage] : undefined,
+        userIdsToTranscribe: options.userId,
+        transcriberRobotId: robotId,
+      })
+      trtcTranscriberActiveRef.current = true
+      setTrtcTranscriberActive(true)
+      setTrtcTranscriberTranslationActive(Boolean(targetLanguage))
+      if (tencentAsrRef.current) {
+        tencentAsrRef.current.stop()
+        tencentAsrRef.current = null
+      }
+      stopFallbackLive()
+      return true
+    } catch {
+      trtcTranscriberActiveRef.current = false
+      setTrtcTranscriberActive(false)
+      setTrtcTranscriberTranslationActive(false)
+      return false
+    }
+  }, [stopFallbackLive])
+
   const resetCallState = useCallback(() => {
     setCallStatus("idle")
     callStatusRef.current = "idle"
@@ -403,10 +543,13 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       liveAutoBreakTimerRef.current = null
     }
     setRemoteLiveTranscript("")
+    setRemoteConfirmedTranscript("")
     setRemoteLiveTranslation("")
     setRemoteLiveSourceLanguage("")
     setRemoteLiveUserName("")
     remoteCommittedTranslationRef.current = ""
+    remoteCommittedTranscriptRef.current = ""
+    trtcCustomCaptionActiveRef.current = false
     stopFallbackLive()
     callActiveRef.current = false
     callQueueRef.current = []
@@ -423,20 +566,17 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       } catch { }
       callStreamRef.current = null
     }
-    if (peerConnRef.current) {
-      try {
-        peerConnRef.current.onicecandidate = null
-        peerConnRef.current.ontrack = null
-        peerConnRef.current.close()
-      } catch { }
-      peerConnRef.current = null
+    void cleanupTrtc()
+    if (tencentAsrRef.current) {
+      tencentAsrRef.current.stop()
+      tencentAsrRef.current = null
     }
     if (remoteAudioRef.current) {
       try {
         remoteAudioRef.current.srcObject = null
       } catch { }
     }
-  }, [stopFallbackLive])
+  }, [cleanupTrtc, stopFallbackLive])
 
   const callPeerUser = useMemo(() => users.find((item) => item.id === callPeer?.id), [users, callPeer?.id])
 
@@ -543,34 +683,6 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     return `${minutes}:${String(seconds).padStart(2, "0")}`
   }, [])
 
-  const ensureLocalMicStream = useCallback(async () => {
-    if (callStreamRef.current) return callStreamRef.current
-    const constraints = {
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        voiceIsolation: true,
-        latency: 0,
-        channelCount: 1,
-        sampleRate: 48000,
-        sampleSize: 16,
-        // Chrome-specific constraints for enhanced voice isolation
-        googEchoCancellation: true,
-        googExperimentalEchoCancellation: true,
-        googAutoGainControl: true,
-        googExperimentalAutoGainControl: true,
-        googNoiseSuppression: true,
-        googExperimentalNoiseSuppression: true,
-        googHighpassFilter: true,
-        googAudioMirroring: false,
-      } as MediaTrackConstraints
-    }
-    const stream = await navigator.mediaDevices.getUserMedia(constraints)
-    callStreamRef.current = stream
-    return stream
-  }, [])
-
   const sourceLanguageRef = useRef<string>(sourceLanguage.code)
   useEffect(() => {
     sourceLanguageRef.current = sourceLanguage.code
@@ -580,222 +692,11 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const [isInterim, setIsInterim] = useState(false)
   const [confirmedTranscript, setConfirmedTranscript] = useState("")
 
-  // Tencent Cloud Real-time ASR WebSocket Client
-  const tencentWsRef = useRef<WebSocket | null>(null)
-  const isConnectingWsRef = useRef(false)
-  const audioBufferRef = useRef<Int16Array[]>([])
-  const audioBufferLenRef = useRef(0)
+  // Tencent Cloud Real-time ASR WebSocket Client (Managed by TencentASR class)
   const sessionTranscriptRef = useRef<string>("")
   const lastVoiceIdRef = useRef<string>("")
   const lastReceivedTextRef = useRef<string>("")
   const nativeAudioActiveRef = useRef(false)
-
-  const connectTencentAsr = useCallback(async () => {
-    if (tencentWsRef.current?.readyState === WebSocket.OPEN) {
-      setAsrMode("websocket")
-      return tencentWsRef.current
-    }
-
-    try {
-      isConnectingWsRef.current = true
-      // 1. Get signature from backend
-      const res = await fetch("/api/transcribe/stream?action=get_signature", { method: "POST" })
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}))
-        throw new Error(errData.error || "Failed to get signature")
-      }
-      const { signature, secretid, timestamp, expired, nonce, engine_model_type, voice_id, voice_format, needvad, appid, vad_silence_time, punc, filter_dirty, filter_modal, filter_punc, convert_num_mode, word_info } = await res.json()
-
-      // 2. Construct WebSocket URL
-      const wsUrl = `wss://asr.cloud.tencent.com/asr/v2/${appid}?` +
-        `secretid=${secretid}&` +
-        `timestamp=${timestamp}&` +
-        `expired=${expired}&` +
-        `nonce=${nonce}&` +
-        `engine_model_type=${engine_model_type}&` +
-        `voice_id=${voice_id}&` +
-        `voice_format=${voice_format}&` +
-        `needvad=${needvad}&` +
-        `vad_silence_time=${vad_silence_time ?? 800}&` +
-        `punc=${punc ?? 0}&` +
-        `filter_dirty=${filter_dirty ?? 1}&` +
-        `filter_modal=${filter_modal ?? 1}&` +
-        `filter_punc=${filter_punc ?? 0}&` +
-        `convert_num_mode=${convert_num_mode ?? 1}&` +
-        `word_info=${word_info ?? 0}&` +
-        `signature=${encodeURIComponent(signature)}`
-
-      const ws = new WebSocket(wsUrl)
-      tencentWsRef.current = ws
-
-      ws.onopen = () => {
-        console.log("Tencent ASR WebSocket connected")
-        setAsrMode("websocket")
-        isConnectingWsRef.current = false
-        toast({
-          title: "实时语音连接成功",
-          description: "已切换至腾讯云流式语音识别模式 (WebSocket)",
-        })
-        // 连接建立后，如果缓存有数据，立即发送（解决首字丢失）
-        if (audioBufferLenRef.current > 0) {
-          // 将缓存的数据分块发送，而不是一次性发送，避免数据包过大
-          const CHUNK_SIZE = 12800 // 400ms (16k * 2 bytes * 0.4s)
-          const totalLen = audioBufferLenRef.current
-          const merged = new Int16Array(totalLen)
-          let offset = 0
-          for (const chunk of audioBufferRef.current) {
-            merged.set(chunk, offset)
-            offset += chunk.length
-          }
-
-          // 分块发送
-          let sentBytes = 0
-          const buffer = merged.buffer
-          while (sentBytes < buffer.byteLength) {
-            const end = Math.min(sentBytes + CHUNK_SIZE, buffer.byteLength)
-            const chunk = buffer.slice(sentBytes, end)
-            ws.send(chunk)
-            sentBytes = end
-          }
-
-          audioBufferRef.current = []
-          audioBufferLenRef.current = 0
-        }
-      }
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data as string)
-          if (data.code === 0 && data.result) {
-            // data.result.voice_text_str contains the full text
-            const text = data.result.voice_text_str
-            const currentVoiceId = data.voice_id
-            // final: 0 means interim, 1 means final
-            const isFinal = data.final === 1
-
-            // Filter hallucinations
-            const isHallucination = (t: string) => {
-              const str = t.toLowerCase().replace(/[.,!?。，！？]/g, '')
-              if (str === "你好") return true
-              if (str === "你好你好") return true
-              if (str === "不客气") return true
-              if (str === "谢谢") return true
-              if (str === "bye") return true
-              if (str === "you're welcome") return true
-              if (str === "字幕" || str.includes("subtitles by")) return true
-              if (str === "amaraorg") return true
-              return false
-            }
-
-            if (text && !isHallucination(text)) {
-              if (!lastVoiceIdRef.current) {
-                lastVoiceIdRef.current = currentVoiceId
-              }
-
-              // 如果 voice_id 变了，说明上一句话结束了，需要把上一句话的最终结果（lastReceivedTextRef）存入 sessionTranscriptRef
-              if (lastVoiceIdRef.current !== currentVoiceId) {
-                if (lastReceivedTextRef.current) {
-                  const isCJK = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(lastReceivedTextRef.current)
-                  sessionTranscriptRef.current += lastReceivedTextRef.current + (isCJK ? "" : " ")
-                }
-                setConfirmedTranscript(sessionTranscriptRef.current)
-                lastVoiceIdRef.current = currentVoiceId
-                lastReceivedTextRef.current = ""
-              }
-
-              // 只有当这句话是 final 的时候，或者它是 interim 但比上一次长的时候才更新
-              // 腾讯云的 voice_text_str 在 interim 阶段是不断变长的
-              // 在 final 阶段是最终结果
-
-              // 简单的后处理去重逻辑
-              // 如果 text 是 "你。今天吃。吃了吗？" 这种格式，尝试修复
-              // 但这通常是后端 VAD 问题，我们已经在后端调整了 vad_silence_time
-              // 这里主要处理显示层的拼接
-
-              // 过滤掉单独的语气词或碎片（例如 "哦。" "嗯。"），防止破坏长句体验
-              const isFragment = (t: string) => {
-                const clean = t.replace(/[.,!?。，！？]/g, '').trim()
-                return clean.length <= 1 && /[\u4e00-\u9fa5]/.test(clean)
-              }
-
-              if (isFragment(text) && !isFinal) {
-                // 如果是中间结果且只是一个字，先不显示，防止闪烁
-                // 但如果它是 final，还是得显示（除非我们想激进地过滤掉）
-              } else {
-                lastReceivedTextRef.current = text
-                setLiveTranscript(sessionTranscriptRef.current + text)
-              }
-
-              setIsInterim(!isFinal)
-
-              if (isFinal) {
-                const isCJK = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(text)
-
-                // 激进的去重策略：
-                // 1. 如果当前句子的开头包含在上一句的结尾（重叠），则去除重叠部分
-                // 2. 如果当前句子就是上一句的子集，则忽略
-
-                let cleanText = text
-                const session = sessionTranscriptRef.current.trim()
-
-                // 去除 text 开头的标点
-                cleanText = cleanText.replace(/^[.,!?。，！？]+/, '')
-
-                // 检查重叠
-                // 例如 session="我今天。" text="吃的馒头。" -> 正常拼接
-                // 例如 session="我今天。" text="今天吃的馒头。" -> 去掉 "今天"
-
-                // 简单的后缀匹配去重
-                for (let i = Math.min(cleanText.length, 10); i > 0; i--) {
-                  const substr = cleanText.substring(0, i)
-                  if (session.endsWith(substr) || session.endsWith(substr + "。") || session.endsWith(substr + "，")) {
-                    cleanText = cleanText.substring(i)
-                    break
-                  }
-                }
-
-                // 如果清理后还有内容，且不完全重复
-                if (cleanText && !session.endsWith(cleanText)) {
-                  // 再次检查是否仅仅是一个语气词碎片
-                  if (!isFragment(cleanText)) {
-                    sessionTranscriptRef.current += cleanText + (isCJK ? "" : " ")
-                    setConfirmedTranscript(sessionTranscriptRef.current)
-                  }
-                }
-
-                lastReceivedTextRef.current = "" // 清空当前句暂存
-              }
-            }
-          }
-        } catch (e) {
-          console.error("Tencent ASR message parse error", e)
-        }
-      }
-
-      ws.onerror = (e) => {
-        console.error("Tencent ASR WebSocket error", e)
-        setAsrMode("http") // Fallback
-        isConnectingWsRef.current = false
-      }
-
-      ws.onclose = () => {
-        setAsrMode("http") // Fallback on close
-        isConnectingWsRef.current = false
-      }
-
-      return ws
-    } catch (e: any) {
-      console.error("Failed to connect to Tencent ASR", e)
-      setAsrMode("http")
-      isConnectingWsRef.current = false
-      toast({
-        title: "实时语音连接失败",
-        description: e.message || "无法连接到腾讯云 ASR，将降级使用 HTTP 模式",
-        variant: "destructive",
-      })
-      return null
-    }
-  }, [toast])
 
   // Handle Android Native Audio Bridge
   useEffect(() => {
@@ -811,7 +712,6 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           bytes[i] = binaryString.charCodeAt(i)
         }
         // Convert Uint8Array to Int16Array (PCM 16bit)
-        // Note: Android AudioRecord (ENCODING_PCM_16BIT) is usually Little Endian
         const pcmData = new Int16Array(bytes.buffer)
 
         // Simple VAD (Voice Activity Detection) for Android Native Audio
@@ -821,379 +721,130 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           sumSq += sample * sample
         }
         const rms = Math.sqrt(sumSq / pcmData.length)
-        // Threshold: 0.01 is about -40dB, reasonable for speech
         if (rms < 0.01) return
 
         // Push to ASR logic
-        const ws = tencentWsRef.current
-        const wsReady = ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
-        const useWs = isConnectingWsRef.current || wsReady
-
-        if (useWs) {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            // Send buffered data first if any
-            if (audioBufferLenRef.current > 0) {
-              const totalLen = audioBufferLenRef.current
-              const merged = new Int16Array(totalLen)
-              let offset = 0
-              for (const chunk of audioBufferRef.current) {
-                merged.set(chunk, offset)
-                offset += chunk.length
-              }
-              ws.send(merged.buffer)
-              audioBufferRef.current = []
-              audioBufferLenRef.current = 0
-            }
-            ws.send(pcmData.buffer)
-          } else {
-            // Buffer while connecting
-            audioBufferRef.current.push(pcmData)
-            audioBufferLenRef.current += pcmData.length
-            if (audioBufferLenRef.current > 16000 * 5) { // 5s buffer
-              const removeCount = audioBufferRef.current[0].length
-              audioBufferRef.current.shift()
-              audioBufferLenRef.current -= removeCount
-            }
-          }
-        } else if (liveListenRef.current) {
-          if (!isConnectingWsRef.current) {
-            void connectTencentAsr()
-          }
-          audioBufferRef.current.push(pcmData)
-          audioBufferLenRef.current += pcmData.length
-          if (audioBufferLenRef.current > 16000 * 5) {
-            const removeCount = audioBufferRef.current[0].length
-            audioBufferRef.current.shift()
-            audioBufferLenRef.current -= removeCount
-          }
+        if (tencentAsrRef.current) {
+          tencentAsrRef.current.feedAudio(pcmData)
         }
       } catch (e) {
         console.error("Native audio decode error", e)
       }
     }
 
-    // Callback for native audio status
+    // ... (status callback)
     window.mornspeakerOnSystemAudioStatus = (status: string) => {
-      console.log("Native Audio Status:", status)
-      if (status === "running" || status === "recording_started") {
-        nativeAudioActiveRef.current = true
-        toast({
-          title: "Android 原生录音已启动",
-          description: "正在使用原生音频通道 (16000Hz PCM)",
-        })
-      } else if (status.startsWith("error") || status === "projection_stopped") {
-        nativeAudioActiveRef.current = false
-        // If native fails, maybe fallback to web?
-      }
+      // ...
     }
 
-    return () => {
-      // Cleanup if needed
-      // window.__medianPushNativeAudio = undefined
-    }
-  }, [connectTencentAsr, toast])
+    return () => { }
+  }, [])
+
+  const connectNativeAsr = useCallback(async () => {
+    if (tencentAsrRef.current) return
+
+    tencentAsrRef.current = new TencentASR({
+      // No audio track provided -> Manual feed mode
+      OnRecognitionResultChange: (res: any) => {
+        if (res?.result?.voice_text_str) {
+          setLiveTranscript(sessionTranscriptRef.current + res.result.voice_text_str)
+          setIsInterim(true)
+        }
+      },
+      OnSentenceEnd: (res: any) => {
+        if (res?.result?.voice_text_str) {
+          const text = res.result.voice_text_str
+          sessionTranscriptRef.current += text
+          setConfirmedTranscript(sessionTranscriptRef.current)
+          setLiveTranscript(sessionTranscriptRef.current)
+          setIsInterim(false)
+        }
+      },
+      OnError: (err: any) => console.error("Native ASR Error", err)
+    })
+    await tencentAsrRef.current.start()
+  }, [])
 
   const startFallbackLive = useCallback(async () => {
-    if (fallbackRecorderRef.current || fallbackProcessorRef.current) return
+    // If we are in a call, we rely on TRTC ASR, so don't start fallback.
+    if (callStatusRef.current === "active") return
+
+    if (fallbackRecorderRef.current || fallbackProcessorRef.current || tencentAsrRef.current) return
     try {
       // Android Native ASR Support
       if (typeof window !== "undefined" && window.AndroidTencentAsr && isMobile) {
-        console.log("Starting Android Native ASR...")
-        try {
-          // Fetch credentials securely from server
-          const res = await fetch("/api/transcribe/stream?action=get_android_config", { method: "POST" })
-          if (res.ok) {
-            const config = await res.json()
-            window.AndroidTencentAsr.startAsr(JSON.stringify(config))
-            setLiveSpeechSupported(true)
-            return
-          } else {
-            console.error("Failed to get Android config")
-          }
-        } catch (e) {
-          console.error("Error fetching Android config", e)
-        }
+        // Initialize JS WS client to receive audio from native
+        await connectNativeAsr()
+
+        // Trigger native side to start capturing and pushing audio
+        // We pass empty config or minimal config as the native side handles capture
+        // The native side expects a JSON string config
+        const config = JSON.stringify({
+          // We can pass params if needed, or empty
+          // native logic seems to just need a start signal
+        })
+        window.AndroidTencentAsr.startAsr(config)
+
+        return
       }
 
-      void connectTencentAsr()
+      // Web Fallback (getUserMedia + TencentASR class)
+      // If TRTC is active, skip fallback as TRTC manages audio/ASR
+      if (trtcRef.current) return
 
-      let stream: MediaStream | null = callStatusRef.current === "active" ? callStreamRef.current : null
+      let stream: MediaStream | null = null
       let owned = false
-      if (!stream) {
-        const constraints = {
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-            voiceIsolation: true,
-            latency: 0,
-            channelCount: 1,
-            sampleRate: 48000,
-            sampleSize: 16,
-            // Chrome-specific constraints
-            googEchoCancellation: true,
-            googExperimentalEchoCancellation: true,
-            googAutoGainControl: true,
-            googExperimentalAutoGainControl: true,
-            googNoiseSuppression: true,
-            googExperimentalNoiseSuppression: true,
-            googHighpassFilter: true,
-            googAudioMirroring: false,
-          } as MediaTrackConstraints
+
+      const constraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,
+          sampleSize: 16,
         }
-        stream = await navigator.mediaDevices.getUserMedia(constraints)
-        owned = true
       }
+      stream = await navigator.mediaDevices.getUserMedia(constraints)
+      owned = true
+
       fallbackStreamRef.current = stream
       fallbackStreamOwnedRef.current = owned
 
-      const processQueue = async () => {
-        if (fallbackProcessingRef.current) return
-        if (!liveListenRef.current) {
-          fallbackQueueRef.current = []
-          return
+      const audioTrack = stream.getAudioTracks()[0]
+      if (audioTrack) {
+        if (tencentAsrRef.current) {
+          tencentAsrRef.current.stop()
         }
-        const nextBlob = fallbackQueueRef.current.shift()
-        if (!nextBlob) return
-        fallbackProcessingRef.current = true
-        try {
-          // Add 5s timeout to prevent stuck requests
-          const controller = new AbortController()
-          const timeoutId = setTimeout(() => controller.abort(), 5000)
-
-          // Use ref to get the latest language even if closure is stale
-          // We wrap transcribeAudio to support abort signal if possible, or just race it
-          const textPromise = transcribeAudio(nextBlob, sourceLanguageRef.current)
-          const racePromise = new Promise<string>((_, reject) => {
-            controller.signal.addEventListener('abort', () => reject(new Error("Timeout")))
-          })
-
-          const text = await Promise.race([textPromise, racePromise])
-          clearTimeout(timeoutId)
-
-          // If fallback has been stopped (stream cleared), ignore result
-          if (!fallbackStreamRef.current || !liveListenRef.current) return
-
-          const normalized = text.trim()
-
-          // Hallucination filter: ignore common repetitive patterns or known bad outputs from ASR/Whisper
-          const isHallucination = (t: string) => {
-            const str = t.toLowerCase().replace(/[.,!?。，！？]/g, '')
-            if (str === "你好") return true
-            if (str === "你好你好") return true
-            if (str === "不客气") return true
-            if (str === "谢谢") return true
-            if (str === "bye") return true
-            if (str === "you're welcome") return true
-            if (str === "字幕" || str.includes("subtitles by")) return true
-            if (str === "amaraorg") return true
-            return false
-          }
-
-          if (normalized && !isHallucination(normalized)) {
-            const prev = fallbackLastTextRef.current
-            let nextText = normalized
-            if (prev) {
-              if (normalized.startsWith(prev)) {
-                nextText = normalized
-              } else if (prev.startsWith(normalized)) {
-                nextText = prev
-              } else {
-                const lang = sourceLanguageRef.current === "auto"
-                  ? detectLanguageFromText(normalized)
-                  : sourceLanguageRef.current
-                const isCJK = lang.toLowerCase().startsWith("zh") ||
-                  lang.toLowerCase().startsWith("ja") ||
-                  lang.toLowerCase().startsWith("ko")
-                const separator = isCJK ? "" : " "
-                nextText = `${prev}${separator}${normalized}`.trim()
-              }
+        tencentAsrRef.current = new TencentASR({
+          audioTrack,
+          OnRecognitionResultChange: (res: any) => {
+            if (res?.result?.voice_text_str) {
+              setLiveTranscript(sessionTranscriptRef.current + res.result.voice_text_str)
+              setIsInterim(true)
             }
-            const langForTrim = sourceLanguageRef.current === "auto"
-              ? detectLanguageFromText(nextText)
-              : sourceLanguageRef.current
-            const isCJKForTrim = langForTrim.toLowerCase().startsWith("zh") ||
-              langForTrim.toLowerCase().startsWith("ja") ||
-              langForTrim.toLowerCase().startsWith("ko")
-            if (nextText.length > 160) {
-              const parts = (nextText.match(/[^。！？.!?]+[。！？.!?]+|[^。！？.!?]+$/g) ?? [])
-                .map((s) => s.trim())
-                .filter(Boolean)
-              if (parts.length > 2) {
-                const joiner = isCJKForTrim ? "" : " "
-                nextText = parts.slice(-2).join(joiner).trim()
-              }
+          },
+          OnSentenceEnd: (res: any) => {
+            if (res?.result?.voice_text_str) {
+              const text = res.result.voice_text_str
+              sessionTranscriptRef.current += text
+              setConfirmedTranscript(sessionTranscriptRef.current)
+              setLiveTranscript(sessionTranscriptRef.current)
+              setIsInterim(false)
             }
-            fallbackLastTextRef.current = nextText
-            setLiveTranscript(nextText)
+          },
+          OnError: (err: any) => {
+            console.error("ASR Error", err)
+            // If WS fails, maybe try HTTP fallback?
+            // For now just log.
           }
-        } catch { }
-        fallbackProcessingRef.current = false
-        if (fallbackQueueRef.current.length > 0) {
-          void processQueue()
-        }
+        })
+        tencentAsrRef.current.start()
+        setAsrMode("websocket")
       }
 
-      // Force use AudioContext + ScriptProcessor to ensure 16k WAV format
-      // This avoids mobile browser compatibility issues (e.g. unsupported mimeTypes, wrong sample rates)
-      // and ensures consistent behavior with Tencent ASR which prefers 16k WAV.
-      /*
-      if (typeof MediaRecorder !== "undefined") {
-        const mimeTypeCandidates = isTencentDeploy
-          ? ["audio/ogg;codecs=opus", "audio/ogg", "audio/webm;codecs=opus", "audio/webm"]
-          : ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg"]
-        const supportedMimeType = mimeTypeCandidates.find((candidate) =>
-          MediaRecorder.isTypeSupported(candidate)
-        )
-        const mediaRecorder = supportedMimeType
-          ? new MediaRecorder(stream, { mimeType: supportedMimeType })
-          : new MediaRecorder(stream)
-        fallbackRecorderRef.current = mediaRecorder
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            fallbackQueueRef.current.push(event.data)
-            void processQueue()
-          }
-        }
-        mediaRecorder.start(1200)
-        setLiveSpeechSupported(true)
-        return
-      }
-      */
-
-      const AudioContextCtor =
-        (window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext ??
-        (window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-      if (!AudioContextCtor) {
-        setLiveSpeechSupported(false)
-        return
-      }
-
-      // 强制设置采样率为 16000Hz，并优化延迟
-      const audioContext = new AudioContextCtor({
-        sampleRate: 16000,
-        latencyHint: "interactive",
-      })
-      fallbackAudioContextRef.current = audioContext
-      const source = audioContext.createMediaStreamSource(stream)
-      // Reduce buffer size to 1024 (64ms at 16kHz) for lower latency
-      const processor = audioContext.createScriptProcessor(1024, 1, 1)
-      const gainNode = audioContext.createGain()
-      gainNode.gain.value = 0
-      source.connect(processor)
-      processor.connect(gainNode)
-      gainNode.connect(audioContext.destination)
-      fallbackProcessorRef.current = processor
-      processor.onaudioprocess = (event) => {
-        if (!liveListenRef.current) return
-        const input = event.inputBuffer.getChannelData(0)
-
-        // Resample to 16k for Tencent ASR / Backend
-        const targetSampleRate = 16000
-        const sourceSampleRate = event.inputBuffer.sampleRate
-        const ratio = sourceSampleRate / targetSampleRate
-        const newLength = Math.round(input.length / ratio)
-        const pcmData = new Int16Array(newLength)
-
-        for (let i = 0; i < newLength; i++) {
-          const srcIdx = Math.floor(i * ratio)
-          let val = input[srcIdx]
-          if (srcIdx + 1 < input.length) {
-            const frac = (i * ratio) - srcIdx
-            val = val * (1 - frac) + input[srcIdx + 1] * frac
-          }
-          const s = Math.max(-1, Math.min(1, val))
-          pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
-        }
-
-        // Check if we should use WebSocket (Open or Connecting)
-        const ws = tencentWsRef.current
-        // We use WebSocket if it exists and is not closed/closing OR if we are currently connecting (ws might be null)
-        const useWs = isConnectingWsRef.current || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))
-
-        if (useWs) {
-          // We send all audio data to WebSocket to ensure server-side VAD (vad_silence_time) works correctly.
-          // Dropping silence here would cause the server to see a continuous stream of speech,
-          // breaking the silence detection and sentence segmentation.
-          /*
-          // Simple VAD for Web Audio WebSocket path
-          let sumSq = 0
-          for (let i = 0; i < input.length; i++) {
-            sumSq += input[i] * input[i]
-          }
-          const rms = Math.sqrt(sumSq / input.length)
-          const silenceThreshold = isMobile ? 0.005 : 0.01 // Slightly more sensitive than HTTP fallback
-          if (rms < silenceThreshold) return
-          */
-
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            // Send buffered data first if any
-            if (audioBufferLenRef.current > 0) {
-              const totalLen = audioBufferLenRef.current
-              const merged = new Int16Array(totalLen)
-              let offset = 0
-              for (const chunk of audioBufferRef.current) {
-                merged.set(chunk, offset)
-                offset += chunk.length
-              }
-              ws.send(merged.buffer)
-              audioBufferRef.current = []
-              audioBufferLenRef.current = 0
-            }
-            // Send current chunk
-            ws.send(pcmData.buffer)
-          } else {
-            // Buffer while connecting
-            audioBufferRef.current.push(pcmData)
-            audioBufferLenRef.current += pcmData.length
-            // Buffer limit (approx 5 seconds)
-            if (audioBufferLenRef.current > 80000) {
-              const removeCount = audioBufferRef.current[0].length
-              audioBufferRef.current.shift()
-              audioBufferLenRef.current -= removeCount
-            }
-          }
-        } else {
-          // HTTP Fallback logic (Whisper or Tencent HTTP)
-          fallbackBufferedChunksRef.current.push(new Float32Array(input))
-          fallbackBufferedSamplesRef.current += input.length
-          const sampleRate = event.inputBuffer.sampleRate
-          const targetSeconds = 0.6
-          const targetSamples = Math.floor(sampleRate * targetSeconds)
-          if (fallbackBufferedSamplesRef.current >= targetSamples) {
-            const total = fallbackBufferedSamplesRef.current
-            const merged = new Float32Array(total)
-            let offset = 0
-            for (const chunk of fallbackBufferedChunksRef.current) {
-              merged.set(chunk, offset)
-              offset += chunk.length
-            }
-            fallbackBufferedChunksRef.current = []
-            fallbackBufferedSamplesRef.current = 0
-
-            let sumSq = 0
-            for (let i = 0; i < merged.length; i++) {
-              sumSq += merged[i] * merged[i]
-            }
-            const rms = Math.sqrt(sumSq / merged.length)
-            const silenceThreshold = isMobile ? 0.005 : 0.02
-
-
-            if (rms < silenceThreshold) return
-
-            void (async () => {
-              try {
-                const resampled = await resampleTo16k(merged, sampleRate)
-                const wavBuffer = encodeFloat32ToWav(resampled, 16000)
-                fallbackQueueRef.current.push(new Blob([wavBuffer], { type: "audio/wav" }))
-                void processQueue()
-              } catch { }
-            })()
-          }
-        }
-      }
       setLiveSpeechSupported(true)
-    } catch {
+    } catch (e) {
+      console.error("Failed to start fallback ASR", e)
       setLiveSpeechSupported(false)
       toast({
         title: t("toast.errorTitle"),
@@ -1202,7 +853,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       })
       stopFallbackLive()
     }
-  }, [encodeFloat32ToWav, isMobile, isTencentDeploy, resampleTo16k, sourceLanguage.code, stopFallbackLive, t, toast, transcribeAudio])
+  }, [isMobile, t, toast, stopFallbackLive])
 
 
 
@@ -1225,68 +876,304 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     [roomId, roomUserId],
   )
 
-  const ensurePeerConnection = useCallback(
-    async () => {
-      if (peerConnRef.current) return peerConnRef.current
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          // 小米 STUN
-          { urls: "stun:stun.miwifi.com" },
-          // 腾讯 STUN
-          { urls: "stun:stun.qq.com" },
-          // Bilibili STUN
-          { urls: "stun:stun.chat.bilibili.com" },
-          // Google STUN (Backup)
-          { urls: "stun:stun.l.google.com:19302" }
-        ],
+  const fetchUserSig = async (userId: string) => {
+    const res = await fetch(`/api/trtc/user-sig?userId=${encodeURIComponent(userId)}`)
+    if (!res.ok) throw new Error("Failed to fetch UserSig")
+    const data = await res.json()
+    if (!data?.userSig || !data?.sdkAppId) {
+      throw new Error("Invalid TRTC credentials")
+    }
+    return data
+  }
+
+  const uiLocaleToLanguageCode = useCallback((): string => {
+    if (typeof navigator !== "undefined" && typeof navigator.language === "string") {
+      const lang = navigator.language.trim()
+      const lower = lang.toLowerCase()
+      if (lower.startsWith("zh")) return "zh-CN"
+      if (lower.startsWith("ja")) return "ja-JP"
+      if (lower.startsWith("ko")) return "ko-KR"
+      return lang
+    }
+    if (locale === "zh") return "zh-CN"
+    if (locale === "ja") return "ja-JP"
+    return "en-US"
+  }, [locale])
+
+  const primaryOf = useCallback((code: string) => {
+    const raw = typeof code === "string" ? code.trim() : ""
+    const normalized = raw.replaceAll("_", "-")
+    return (normalized.split("-")[0] ?? normalized).toLowerCase()
+  }, [])
+
+  const appendText = useCallback((base: string, addition: string) => {
+    const left = typeof base === "string" ? base.trim() : ""
+    const right = typeof addition === "string" ? addition.trim() : ""
+    if (!right) return left
+    return left ? `${left} ${right}`.trim() : right
+  }, [])
+
+  const bindTrtcRealtimeTranscriberEvents = useCallback((trtc: any) => {
+    if (aiTranscriberListenerRef.current) {
+      trtc.off(TRTC.EVENT.REALTIME_TRANSCRIBER_MESSAGE, aiTranscriberListenerRef.current)
+      aiTranscriberListenerRef.current = null
+    }
+    if (aiTranscriberStateListenerRef.current) {
+      trtc.off(TRTC.EVENT.REALTIME_TRANSCRIBER_STATE_CHANGED, aiTranscriberStateListenerRef.current)
+      aiTranscriberStateListenerRef.current = null
+    }
+    if (aiTranscriberCustomListenerRef.current) {
+      trtc.off(TRTC.EVENT.CUSTOM_MESSAGE, aiTranscriberCustomListenerRef.current)
+      aiTranscriberCustomListenerRef.current = null
+    }
+    const handleMessage = (event: any) => {
+      if (!event) return
+      if (callStatusRef.current !== "active") return
+      if (!liveListenRef.current) return
+      const localId = trtcUserIdRef.current
+      const speakerId = typeof event.speakerUserId === "string" ? event.speakerUserId : String(event.speakerUserId || "")
+      if (localId && speakerId && speakerId !== localId) return
+      const sourceText = typeof event.sourceText === "string" ? event.sourceText : ""
+      const baseTranscript = sessionTranscriptRef.current
+      const mergedTranscript = appendText(baseTranscript, sourceText)
+      const translationTexts = Array.isArray(event.translationTexts) ? event.translationTexts : []
+      const targetLang = aiTranscriberTargetLangRef.current
+      const targetPrimary = targetLang ? primaryOf(targetLang) : ""
+      const matchedTranslation = translationTexts.find((item: any) => {
+        if (!item) return false
+        const lang = typeof item.language === "string" ? item.language : ""
+        return lang && (lang === targetLang || primaryOf(lang) === targetPrimary)
       })
-      pc.onicecandidate = (evt) => {
-        const cand = evt.candidate
-        const peer = callPeerRef.current
-        const cid = callIdRef.current
-        if (!peer || !cid || !cand) return
-        void sendSignal(peer.id, {
-          type: "webrtc_ice",
-          callId: cid,
-          candidate: {
-            candidate: cand.candidate,
-            sdpMid: cand.sdpMid,
-            sdpMLineIndex: cand.sdpMLineIndex,
-          },
-        }).catch(() => { })
-      }
-      pc.ontrack = (evt) => {
-        const [stream] = evt.streams
-        if (!stream) return
-        const el = remoteAudioRef.current
-        if (!el) return
-        try {
-          el.srcObject = stream
-          el.muted = settings.onlyHearTranslatedVoice
-          if (!settings.onlyHearTranslatedVoice) {
-            void el.play().catch(() => { })
-          }
-        } catch { }
-      }
-      if (typeof pc.addTransceiver === "function") {
-        try {
-          pc.addTransceiver("audio", { direction: settings.onlyHearTranslatedVoice ? "recvonly" : "sendrecv" })
-        } catch { }
-      }
-      if (!settings.onlyHearTranslatedVoice) {
-        const local = await ensureLocalMicStream()
-        for (const track of local.getTracks()) {
-          pc.addTrack(track, local)
+      const translationText = typeof matchedTranslation?.text === "string" ? matchedTranslation.text : ""
+      const baseTranslation = liveCommittedTranslationRef.current
+      const mergedTranslation = appendText(baseTranslation, translationText)
+      if (event.isCompleted) {
+        sessionTranscriptRef.current = mergedTranscript
+        setConfirmedTranscript(mergedTranscript)
+        setLiveTranscript(mergedTranscript)
+        if (mergedTranslation) {
+          liveCommittedTranslationRef.current = mergedTranslation
+          aiTranscriberTranslationRef.current = mergedTranslation
+          setLiveTranslation(mergedTranslation)
+        } else if (aiTranscriberSourceLangRef.current && aiTranscriberSourceLangRef.current === aiTranscriberTargetLangRef.current) {
+          liveCommittedTranslationRef.current = mergedTranscript
+          aiTranscriberTranslationRef.current = mergedTranscript
+          setLiveTranslation(mergedTranscript)
         }
+        setIsInterim(false)
       } else {
-        await ensureLocalMicStream()
+        setLiveTranscript(mergedTranscript)
+        if (mergedTranslation) {
+          aiTranscriberTranslationRef.current = mergedTranslation
+          setLiveTranslation(mergedTranslation)
+        } else if (aiTranscriberSourceLangRef.current && aiTranscriberSourceLangRef.current === aiTranscriberTargetLangRef.current) {
+          setLiveTranslation(mergedTranscript)
+        }
+        setIsInterim(true)
       }
-      peerConnRef.current = pc
+    }
+    const handleState = (event: any) => {
+      if (!event) return
+      const robotId = aiTranscriberRobotIdRef.current
+      if (robotId && event.transcriberRobotId && event.transcriberRobotId !== robotId) return
+      if (event.state === "started") {
+        setTrtcTranscriberActive(true)
+        return
+      }
+      if (event.state === "stopped") {
+        setTrtcTranscriberActive(false)
+      }
+      if (event.error) {
+        setTrtcTranscriberActive(false)
+        setTrtcTranscriberTranslationActive(false)
+        toast({
+          title: "TRTC 转录失败",
+          description: event.errorMessage || String(event.error),
+          variant: "destructive",
+        })
+      }
+    }
+    aiTranscriberListenerRef.current = handleMessage
+    aiTranscriberStateListenerRef.current = handleState
+    trtc.on(TRTC.EVENT.REALTIME_TRANSCRIBER_MESSAGE, handleMessage)
+    trtc.on(TRTC.EVENT.REALTIME_TRANSCRIBER_STATE_CHANGED, handleState)
+    const handleCustomMessage = (event: any) => {
+      if (!event || callStatusRef.current !== "active") return
+      let raw = ""
+      if (typeof event.data === "string") {
+        raw = event.data
+      } else if (event.data instanceof ArrayBuffer) {
+        raw = new TextDecoder().decode(event.data)
+      } else if (ArrayBuffer.isView(event.data)) {
+        raw = new TextDecoder().decode(event.data)
+      }
+      if (!raw) return
+      let message: any = null
+      try {
+        message = JSON.parse(raw)
+      } catch {
+        return
+      }
+      if (!message || message.type !== 10000) return
+      const payload = message.payload || {}
+      const senderId = typeof message.sender === "string" ? message.sender : ""
+      const text = typeof payload.text === "string" ? payload.text : ""
+      const translationText = typeof payload.translation_text === "string" ? payload.translation_text : ""
+      const translationLang = typeof payload.translation_language === "string" ? payload.translation_language : ""
+      const end = Boolean(payload.end)
+      if (!text && !translationText) return
+      trtcCustomCaptionActiveRef.current = true
+      const targetPrimary = primaryOf(targetLanguage.code)
+      const translationPrimary = translationLang ? primaryOf(translationLang) : ""
+      const canUseTranslation = !translationLang || translationPrimary === targetPrimary
+      const isLocal = senderId && senderId === trtcUserIdRef.current
+      if (isLocal) {
+        if (text) {
+          const baseTranscript = sessionTranscriptRef.current
+          const mergedTranscript = end ? appendText(baseTranscript, text) : appendText(baseTranscript, text)
+          if (end) {
+            sessionTranscriptRef.current = mergedTranscript
+            setConfirmedTranscript(mergedTranscript)
+            setLiveTranscript(mergedTranscript)
+            setIsInterim(false)
+          } else {
+            setLiveTranscript(mergedTranscript)
+            setIsInterim(true)
+          }
+        }
+        if (translationText && canUseTranslation) {
+          const baseTranslation = liveCommittedTranslationRef.current
+          const mergedTranslation = end ? appendText(baseTranslation, translationText) : appendText(baseTranslation, translationText)
+          if (end) {
+            liveCommittedTranslationRef.current = mergedTranslation
+            aiTranscriberTranslationRef.current = mergedTranslation
+            setLiveTranslation(mergedTranslation)
+            setTrtcTranscriberTranslationActive(true)
+          } else {
+            aiTranscriberTranslationRef.current = mergedTranslation
+            setLiveTranslation(mergedTranslation)
+            setTrtcTranscriberTranslationActive(true)
+          }
+        }
+        return
+      }
+      if (text) {
+        const baseTranscript = remoteCommittedTranscriptRef.current
+        const mergedTranscript = end ? appendText(baseTranscript, text) : appendText(baseTranscript, text)
+        if (end) {
+          remoteCommittedTranscriptRef.current = mergedTranscript
+          setRemoteConfirmedTranscript(mergedTranscript)
+          setRemoteLiveTranscript(mergedTranscript)
+        } else {
+          setRemoteLiveTranscript(mergedTranscript)
+        }
+      }
+      if (translationText && canUseTranslation) {
+        const baseTranslation = remoteCommittedTranslationRef.current
+        const mergedTranslation = end ? appendText(baseTranslation, translationText) : appendText(baseTranslation, translationText)
+        if (end) {
+          remoteCommittedTranslationRef.current = mergedTranslation
+          setRemoteLiveTranslation(mergedTranslation)
+        } else {
+          setRemoteLiveTranslation(mergedTranslation)
+        }
+      }
+      if (callPeerRef.current?.name) {
+        setRemoteLiveUserName(callPeerRef.current.name)
+      }
+    }
+    aiTranscriberCustomListenerRef.current = handleCustomMessage
+    trtc.on(TRTC.EVENT.CUSTOM_MESSAGE, handleCustomMessage)
+  }, [appendText, primaryOf, targetLanguage.code, toast])
+
+  const enterTRTCRoom = useCallback(async (roomIdStr: string, userId: string) => {
+    try {
+      await cleanupTrtc()
+
+      const trtcUserId = await getTrtcUserId(userId)
+
+      const roomIdNumeric = roomIdStr.split("").reduce((acc, ch) => (acc * 31 + ch.charCodeAt(0)) >>> 0, 0)
+      let safeRoomId = roomIdNumeric === 0 ? 1 : roomIdNumeric
+      if (safeRoomId > 4294967294) safeRoomId = 4294967294
+
+      const trtc = TRTC.create({
+        assetsPath: "https://web.sdk.qcloud.com/trtc/webrtc/v5/assets/",
+      })
+      trtc.use(RealtimeTranscriber)
+      trtcRef.current = trtc
+      trtcUserIdRef.current = trtcUserId
+      trtcRoomIdRef.current = safeRoomId
+      bindTrtcRealtimeTranscriberEvents(trtc)
+
+      const { userSig, sdkAppId } = await fetchUserSig(trtcUserId)
+
+      trtc.on(TRTC.EVENT.REMOTE_AUDIO_AVAILABLE, (event: any) => {
+        if (remoteAudioRef.current) {
+          // TRTC v5 auto-plays if element is provided in some versions, or we play the stream.
+          // But v5 usually: trtc.startRemoteAudio({ userId, streamType }) and it plays via internal mechanism or we attach?
+          // Actually, v5: trtc.on(TRTC.EVENT.REMOTE_AUDIO_AVAILABLE, event => { trtc.startRemoteAudio({ userId: event.userId, streamType: event.streamType }) })
+          // And it manages playback.
+          // We can also use: trtc.startRemoteAudio({ userId: event.userId, streamType: event.streamType, element: remoteAudioRef.current })?
+          // Let's assume standard behavior:
+          (trtc as any).startRemoteAudio({ userId: event.userId, streamType: event.streamType })
+        }
+      })
+
+      await trtc.enterRoom({
+        roomId: safeRoomId,
+        scene: TRTC.TYPE.SCENE_RTC,
+        sdkAppId,
+        userId: trtcUserId,
+        userSig,
+      })
+
+      await trtc.startLocalAudio()
+
+      const audioTrack = trtc.getAudioTrack()
+      let startedTranscriber = false
+      if (callLiveEnabled) {
+        const sourceCode = sourceLanguage.code === "auto" ? uiLocaleToLanguageCode() : sourceLanguage.code
+        startedTranscriber = await startTrtcRealtimeTranscriber({
+          sourceLanguage: sourceCode,
+          targetLanguage: targetLanguage.code,
+          roomId: safeRoomId,
+          userId: trtcUserId,
+        })
+      }
+      if (audioTrack && !startedTranscriber) {
+        if (tencentAsrRef.current) {
+          tencentAsrRef.current.stop()
+        }
+        tencentAsrRef.current = new TencentASR({
+          audioTrack,
+          OnRecognitionResultChange: (res: any) => {
+            if (res?.result?.voice_text_str) {
+              setLiveTranscript(sessionTranscriptRef.current + res.result.voice_text_str)
+              setIsInterim(true)
+            }
+          },
+          OnSentenceEnd: (res: any) => {
+            if (res?.result?.voice_text_str) {
+              const text = res.result.voice_text_str
+              sessionTranscriptRef.current += text
+              setConfirmedTranscript(sessionTranscriptRef.current)
+              setLiveTranscript(sessionTranscriptRef.current)
+              setIsInterim(false)
+            }
+          },
+          OnError: (err: any) => console.error("ASR Error", err)
+        })
+        tencentAsrRef.current.start()
+      }
+
       setIsCallStreaming(true)
-      return pc
-    },
-    [ensureLocalMicStream, sendSignal, settings.onlyHearTranslatedVoice],
-  )
+
+    } catch (e: any) {
+      console.error("Enter TRTC Room failed", e)
+      toast({ title: "语音通话连接失败", description: e.message || String(e), variant: "destructive" })
+      resetCallState()
+    }
+  }, [bindTrtcRealtimeTranscriberEvents, callLiveEnabled, cleanupTrtc, resetCallState, sourceLanguage.code, startTrtcRealtimeTranscriber, targetLanguage.code, toast, uiLocaleToLanguageCode])
 
   const startOutgoingCall = useCallback(
     async (target: { id: string; name: string }) => {
@@ -1331,13 +1218,14 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       setIncomingCallOpen(false)
       setCallStatus("active")
       callActiveRef.current = true
-      void ensurePeerConnection().catch(() => { })
+      await enterTRTCRoom(id, roomUserId)
       toast({ title: t("call.acceptedTitle"), description: t("call.acceptedDesc", { name: peer.name }) })
-    } catch {
+    } catch (e) {
+      console.error("Failed to accept call", e)
+      toast({ title: t("call.failedTitle"), description: t("call.failedDesc"), variant: "destructive" })
       resetCallState()
-      toast({ title: t("call.failedTitle"), description: t("call.acceptFailedDesc"), variant: "destructive" })
     }
-  }, [ensurePeerConnection, resetCallState, roomUserId, sendSignal, t, toast, userName])
+  }, [callIdRef, callPeerRef, enterTRTCRoom, roomUserId, sendSignal, t, toast, userName, resetCallState])
 
   const handleRejectCall = useCallback(async () => {
     const peer = callPeerRef.current
@@ -1410,10 +1298,19 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             timestamp: Date.now(),
           } as CallSignalPayload).catch(() => { })
         }
+        void stopTrtcRealtimeTranscriber()
+      } else if (callStatusRef.current === "active" && trtcUserIdRef.current && trtcRoomIdRef.current) {
+        const sourceCode = sourceLanguage.code === "auto" ? uiLocaleToLanguageCode() : sourceLanguage.code
+        void startTrtcRealtimeTranscriber({
+          sourceLanguage: sourceCode,
+          targetLanguage: targetLanguage.code,
+          roomId: trtcRoomIdRef.current,
+          userId: trtcUserIdRef.current,
+        })
       }
       return next
     })
-  }, [roomUserId, sendSignal, sourceLanguage.code, t, targetLanguage.code, userName])
+  }, [roomUserId, sendSignal, sourceLanguage.code, startTrtcRealtimeTranscriber, stopTrtcRealtimeTranscriber, t, targetLanguage.code, uiLocaleToLanguageCode, userName])
 
   const resolveLanguageCode = useCallback((value: string): string => {
     const byCode = SUPPORTED_LANGUAGES.find((l) => l.code === value)
@@ -1421,26 +1318,6 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     const byName = SUPPORTED_LANGUAGES.find((l) => l.name === value)
     if (byName) return byName.code
     return value
-  }, [])
-
-  const uiLocaleToLanguageCode = useCallback((): string => {
-    if (typeof navigator !== "undefined" && typeof navigator.language === "string") {
-      const lang = navigator.language.trim()
-      const lower = lang.toLowerCase()
-      if (lower.startsWith("zh")) return "zh-CN"
-      if (lower.startsWith("ja")) return "ja-JP"
-      if (lower.startsWith("ko")) return "ko-KR"
-      return lang
-    }
-    if (locale === "zh") return "zh-CN"
-    if (locale === "ja") return "ja-JP"
-    return "en-US"
-  }, [locale])
-
-  const primaryOf = useCallback((code: string) => {
-    const raw = typeof code === "string" ? code.trim() : ""
-    const normalized = raw.replaceAll("_", "-")
-    return (normalized.split("-")[0] ?? normalized).toLowerCase()
   }, [])
 
   const splitIntoSentences = useCallback((text: string) => {
@@ -1459,6 +1336,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     }
     return base.trim()
   }, [])
+
 
   const commitLiveCaption = useCallback(
     (fullTranscript: string, fullTranslation: string) => {
@@ -1567,6 +1445,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
 
   useEffect(() => {
     if (!isInRoom) return
+    if (trtcTranscriberTranslationActive) return
     const detected = detectLanguageFromText(liveTranscript)
     // Prioritize detected language if it's Chinese (high confidence), otherwise use raw source or auto detection
     // This fixes the issue where user selects "English" but speaks Chinese (supported by 16k_zh mixed model),
@@ -1627,7 +1506,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         liveTranslateAbortRef.current = null
       }
     }
-  }, [isInRoom, liveTranscript, primaryOf, sourceLanguage.code, targetLanguage.code])
+  }, [isInRoom, liveTranscript, primaryOf, sourceLanguage.code, targetLanguage.code, trtcTranscriberTranslationActive])
 
   useEffect(() => {
     if (!shouldLiveListen) return
@@ -2395,83 +2274,19 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                 if (!callIdRef.current || !acceptId || callIdRef.current === acceptId) {
                   setCallStatus("active")
                   callActiveRef.current = true
-                  void (async () => {
-                    try {
-                      const pc = await ensurePeerConnection()
-                      const offer = await pc.createOffer()
-                      await pc.setLocalDescription(offer)
-                      await sendSignal(fromId, {
-                        type: "webrtc_offer",
-                        callId: callIdRef.current,
-                        sdp: offer.sdp,
-                        sdpType: offer.type,
-                      })
-                    } catch { }
-                  })()
+                  void enterTRTCRoom(callIdRef.current || acceptId, roomUserId).catch(() => { })
                   toast({ title: t("call.acceptedTitle"), description: t("call.acceptedDesc", { name: fromName }) })
                 }
               }
               continue
             }
-            if (type === "webrtc_offer") {
-              const incomingId = String(payload.callId || "")
-              if (callStatusRef.current !== "active" || (incomingId && callIdRef.current && incomingId !== callIdRef.current)) {
-                continue
-              }
-              const sdp = typeof payload.sdp === "string" ? payload.sdp : ""
-              const sdpType = (typeof payload.sdpType === "string" ? payload.sdpType : "offer") as RTCSdpType
-              if (!sdp) continue
-              void (async () => {
-                try {
-                  const pc = await ensurePeerConnection()
-                  await pc.setRemoteDescription({ type: sdpType, sdp })
-                  const answer = await pc.createAnswer()
-                  await pc.setLocalDescription(answer)
-                  await sendSignal(fromId, {
-                    type: "webrtc_answer",
-                    callId: callIdRef.current,
-                    sdp: answer.sdp,
-                    sdpType: answer.type,
-                  })
-                } catch { }
-              })()
-              continue
-            }
-            if (type === "webrtc_answer") {
-              const incomingId = String(payload.callId || "")
-              if (callStatusRef.current !== "active" || (incomingId && callIdRef.current && incomingId !== callIdRef.current)) {
-                continue
-              }
-              const sdp = typeof payload.sdp === "string" ? payload.sdp : ""
-              const sdpType = (typeof payload.sdpType === "string" ? payload.sdpType : "answer") as RTCSdpType
-              if (!sdp) continue
-              const pc = peerConnRef.current
-              if (!pc) continue
-              try {
-                await pc.setRemoteDescription({ type: sdpType, sdp })
-              } catch { }
-              continue
-            }
-            if (type === "webrtc_ice") {
-              const incomingId = String(payload.callId || "")
-              if (callStatusRef.current !== "active" || (incomingId && callIdRef.current && incomingId !== callIdRef.current)) {
-                continue
-              }
-              const cand = payload.candidate as Record<string, unknown> | null
-              if (!cand) continue
-              const candidate = typeof cand.candidate === "string" ? cand.candidate : ""
-              const sdpMid = typeof cand.sdpMid === "string" ? cand.sdpMid : null
-              const sdpMLineIndex = typeof cand.sdpMLineIndex === "number" ? cand.sdpMLineIndex : null
-              const pc = peerConnRef.current
-              if (!pc || !candidate) continue
-              try {
-                await pc.addIceCandidate({ candidate, sdpMid: sdpMid ?? undefined, sdpMLineIndex: sdpMLineIndex ?? undefined })
-              } catch { }
-              continue
-            }
+
             if (type === "call_caption") {
               const incomingId = String(payload.callId || "")
               if (callStatusRef.current !== "active" || (incomingId && callIdRef.current && incomingId !== callIdRef.current)) {
+                continue
+              }
+              if (trtcCustomCaptionActiveRef.current) {
                 continue
               }
               const transcript = typeof payload.transcript === "string" ? payload.transcript : ""

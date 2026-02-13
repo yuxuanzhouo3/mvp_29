@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useRef } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 
 type TextToSpeechOptions = {
   rate?: number
@@ -15,7 +15,9 @@ export function useTextToSpeech(options: TextToSpeechOptions = {}) {
   const unlockedRef = useRef(false)
   const isSupported = typeof window !== "undefined" && (typeof window.speechSynthesis !== "undefined" || (typeof window !== "undefined" && typeof (window as any).AndroidTTS !== "undefined"))
 
-  optionsRef.current = options
+  useEffect(() => {
+    optionsRef.current = options
+  }, [options])
 
   const unlock = useCallback(() => {
     if (!isSupported) return Promise.resolve(false)

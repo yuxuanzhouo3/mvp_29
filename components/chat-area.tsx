@@ -28,6 +28,7 @@ export function ChatArea({
   const { speak, stop, isSpeaking } = useTextToSpeech({ rate: speechRate, volume: speechVolume })
   const { locale, t } = useI18n()
   const [playingMessageId, setPlayingMessageId] = useState<string | null>(null)
+  const [hasAudio, setHasAudio] = useState(false)
   const [showScrollToTop, setShowScrollToTop] = useState(false)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -66,7 +67,7 @@ export function ChatArea({
   const isMessagePlaying = (message: Message) => {
     const targetId = getPrimaryPlayId(message)
     if (playingMessageId !== targetId) return false
-    if (message.isUser && message.audioUrl) return Boolean(audioRef.current)
+    if (message.isUser && message.audioUrl) return hasAudio
     return isSpeaking
   }
 
@@ -75,25 +76,30 @@ export function ChatArea({
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current.currentTime = 0
+      setHasAudio(false)
     }
     const audio = new Audio(url)
     audioRef.current = audio
+    setHasAudio(true)
     setPlayingMessageId(targetId)
     audio.onended = () => {
       if (audioRef.current === audio) {
         audioRef.current = null
+        setHasAudio(false)
         setPlayingMessageId(null)
       }
     }
     audio.onerror = () => {
       if (audioRef.current === audio) {
         audioRef.current = null
+        setHasAudio(false)
         setPlayingMessageId(null)
       }
     }
     audio.play().catch(() => {
       if (audioRef.current === audio) {
         audioRef.current = null
+        setHasAudio(false)
         setPlayingMessageId(null)
       }
     })
@@ -168,12 +174,15 @@ export function ChatArea({
           audioRef.current.currentTime = 0
           audioRef.current = null
         }
-        if (lastMessage.isUser && lastMessage.audioUrl) {
-          playAudioUrl(`${lastMessage.id}-original`, lastMessage.audioUrl)
+        const audioUrl = lastMessage.audioUrl
+        if (lastMessage.isUser && audioUrl) {
+          queueMicrotask(() => playAudioUrl(`${lastMessage.id}-original`, audioUrl))
         } else {
           const languageCode = getSpeechLanguageCode(lastMessage.targetLanguage)
-          speak(lastMessage.translatedText, languageCode)
-          setPlayingMessageId(`${lastMessage.id}-translated`)
+          queueMicrotask(() => {
+            speak(lastMessage.translatedText, languageCode)
+            setPlayingMessageId(`${lastMessage.id}-translated`)
+          })
         }
       }
     }
@@ -201,6 +210,7 @@ export function ChatArea({
         audioRef.current.pause()
         audioRef.current.currentTime = 0
         audioRef.current = null
+        setHasAudio(false)
       }
       const languageCode = getSpeechLanguageCode(message.targetLanguage)
       speak(message.translatedText, languageCode)
@@ -215,7 +225,9 @@ export function ChatArea({
       audioRef.current.pause()
       audioRef.current.currentTime = 0
       audioRef.current = null
+      setHasAudio(false)
       setPlayingMessageId(null)
+      return
       return
     }
     playAudioUrl(targetId, message.audioUrl)

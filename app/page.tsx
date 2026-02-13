@@ -1,19 +1,15 @@
 import { LandingPage } from "@/components/landing-page"
 import { headers } from "next/headers"
 
-type HomeProps = {
-  searchParams?: Record<string, string | string[] | undefined>
-}
-
 const getParamValue = (value: string | string[] | undefined) => {
   if (Array.isArray(value)) return value[0]
   return value
 }
 
-export default async function Home({ searchParams }: HomeProps) {
+export default async function Home({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const headerList = await headers()
   const ua = (headerList.get("user-agent") || "").toLowerCase()
-  const params = searchParams ?? {}
+  const params = (await searchParams) ?? {}
   const envParam = getParamValue(params._wxjs_environment)
   const fromParam = getParamValue(params.from)
   const mpParam = getParamValue(params.mp)
