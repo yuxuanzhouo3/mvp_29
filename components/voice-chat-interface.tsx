@@ -945,8 +945,6 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       const speakerId = typeof event.speakerUserId === "string" ? event.speakerUserId : String(event.speakerUserId || "")
       if (localId && speakerId && speakerId !== localId) return
       const sourceText = typeof event.sourceText === "string" ? event.sourceText : ""
-      const baseTranscript = sessionTranscriptRef.current
-      const mergedTranscript = appendText(baseTranscript, sourceText)
       const translationTexts = Array.isArray(event.translationTexts) ? event.translationTexts : []
       const targetLang = aiTranscriberTargetLangRef.current
       const targetPrimary = targetLang ? primaryOf(targetLang) : ""
@@ -956,12 +954,17 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         return lang && (lang === targetLang || primaryOf(lang) === targetPrimary)
       })
       const translationText = typeof matchedTranslation?.text === "string" ? matchedTranslation.text : ""
-      const baseTranslation = liveCommittedTranslationRef.current
-      const mergedTranslation = appendText(baseTranslation, translationText)
+
       if (event.isCompleted) {
+        // Final result: append to committed transcript
+        const baseTranscript = sessionTranscriptRef.current
+        const mergedTranscript = appendText(baseTranscript, sourceText)
         sessionTranscriptRef.current = mergedTranscript
         setConfirmedTranscript(mergedTranscript)
         setLiveTranscript(mergedTranscript)
+
+        const baseTranslation = liveCommittedTranslationRef.current
+        const mergedTranslation = appendText(baseTranslation, translationText)
         if (mergedTranslation) {
           liveCommittedTranslationRef.current = mergedTranslation
           aiTranscriberTranslationRef.current = mergedTranslation
@@ -973,12 +976,19 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         }
         setIsInterim(false)
       } else {
-        setLiveTranscript(mergedTranscript)
-        if (mergedTranslation) {
-          aiTranscriberTranslationRef.current = mergedTranslation
-          setLiveTranslation(mergedTranslation)
+        // Interim result: show current sentence without appending to committed
+        // sourceText is the current recognition result for this sentence, not an increment
+        const baseTranscript = sessionTranscriptRef.current
+        const displayTranscript = appendText(baseTranscript, sourceText)
+        setLiveTranscript(displayTranscript)
+
+        const baseTranslation = liveCommittedTranslationRef.current
+        const displayTranslation = appendText(baseTranslation, translationText)
+        if (displayTranslation) {
+          aiTranscriberTranslationRef.current = displayTranslation
+          setLiveTranslation(displayTranslation)
         } else if (aiTranscriberSourceLangRef.current && aiTranscriberSourceLangRef.current === aiTranscriberTargetLangRef.current) {
-          setLiveTranslation(mergedTranscript)
+          setLiveTranslation(displayTranscript)
         }
         setIsInterim(true)
       }
@@ -1041,28 +1051,34 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       if (isLocal) {
         if (text) {
           const baseTranscript = sessionTranscriptRef.current
-          const mergedTranscript = end ? appendText(baseTranscript, text) : appendText(baseTranscript, text)
           if (end) {
+            // Final result: append to committed transcript
+            const mergedTranscript = appendText(baseTranscript, text)
             sessionTranscriptRef.current = mergedTranscript
             setConfirmedTranscript(mergedTranscript)
             setLiveTranscript(mergedTranscript)
             setIsInterim(false)
           } else {
-            setLiveTranscript(mergedTranscript)
+            // Interim result: show current sentence without appending
+            const displayTranscript = appendText(baseTranscript, text)
+            setLiveTranscript(displayTranscript)
             setIsInterim(true)
           }
         }
         if (translationText && canUseTranslation) {
           const baseTranslation = liveCommittedTranslationRef.current
-          const mergedTranslation = end ? appendText(baseTranslation, translationText) : appendText(baseTranslation, translationText)
           if (end) {
+            // Final result: append to committed translation
+            const mergedTranslation = appendText(baseTranslation, translationText)
             liveCommittedTranslationRef.current = mergedTranslation
             aiTranscriberTranslationRef.current = mergedTranslation
             setLiveTranslation(mergedTranslation)
             setTrtcTranscriberTranslationActive(true)
           } else {
-            aiTranscriberTranslationRef.current = mergedTranslation
-            setLiveTranslation(mergedTranslation)
+            // Interim result: show current translation without appending
+            const displayTranslation = appendText(baseTranslation, translationText)
+            aiTranscriberTranslationRef.current = displayTranslation
+            setLiveTranslation(displayTranslation)
             setTrtcTranscriberTranslationActive(true)
           }
         }
@@ -1070,23 +1086,29 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       }
       if (text) {
         const baseTranscript = remoteCommittedTranscriptRef.current
-        const mergedTranscript = end ? appendText(baseTranscript, text) : appendText(baseTranscript, text)
         if (end) {
+          // Final result: append to committed transcript
+          const mergedTranscript = appendText(baseTranscript, text)
           remoteCommittedTranscriptRef.current = mergedTranscript
           setRemoteConfirmedTranscript(mergedTranscript)
           setRemoteLiveTranscript(mergedTranscript)
         } else {
-          setRemoteLiveTranscript(mergedTranscript)
+          // Interim result: show current sentence without appending
+          const displayTranscript = appendText(baseTranscript, text)
+          setRemoteLiveTranscript(displayTranscript)
         }
       }
       if (translationText && canUseTranslation) {
         const baseTranslation = remoteCommittedTranslationRef.current
-        const mergedTranslation = end ? appendText(baseTranslation, translationText) : appendText(baseTranslation, translationText)
         if (end) {
+          // Final result: append to committed translation
+          const mergedTranslation = appendText(baseTranslation, translationText)
           remoteCommittedTranslationRef.current = mergedTranslation
           setRemoteLiveTranslation(mergedTranslation)
         } else {
-          setRemoteLiveTranslation(mergedTranslation)
+          // Interim result: show current translation without appending
+          const displayTranslation = appendText(baseTranslation, translationText)
+          setRemoteLiveTranslation(displayTranslation)
         }
       }
       if (callPeerRef.current?.name) {
@@ -1390,10 +1412,27 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
 
   useEffect(() => {
     if (callStatus !== "active") return
+
+    // Control TRTC local audio mute/unmute
+    const trtc = trtcRef.current
+    if (trtc) {
+      try {
+        if (isCallMuted) {
+          trtc.muteLocalAudio()
+        } else {
+          trtc.unmuteLocalAudio()
+        }
+      } catch (e) {
+        console.error("[v0] Failed to mute/unmute TRTC audio:", e)
+      }
+    }
+
+    // Also control fallback stream if exists
     const stream = callStreamRef.current
-    if (!stream) return
-    for (const track of stream.getAudioTracks()) {
-      track.enabled = !isCallMuted
+    if (stream) {
+      for (const track of stream.getAudioTracks()) {
+        track.enabled = !isCallMuted
+      }
     }
   }, [callStatus, isCallMuted])
 
