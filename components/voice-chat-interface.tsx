@@ -252,7 +252,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const trtcTranscriberActiveRef = useRef(false)
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null)
   const liveListenRef = useRef(false)
-  const { speak, unlock: unlockTts, isSupported: ttsSupported, isUnlocked: isTtsUnlocked } = useTextToSpeech({
+  const { speak, speakWithOptions, unlock: unlockTts, isSupported: ttsSupported, isUnlocked: isTtsUnlocked, isSpeaking: ttsSpeaking, getVoices, getLastVoice } = useTextToSpeech({
     rate: settings.speechRate,
     volume: settings.speechVolume,
   })
@@ -261,9 +261,13 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const remoteSpokenTranslationRef = useRef("")
   const remoteLastSpokenTextRef = useRef("")
   const trtcCustomCaptionActiveRef = useRef(false)
+  const remoteTranslateLatestRef = useRef("")
+  const remoteTranslateSourceRef = useRef("")
+  const remoteTranslateTargetRef = useRef("")
   const ttsUnlockedRef = useRef(false)
   const ttsUnlockingRef = useRef(false)
-  const ttsUnlockPromptedRef = useRef(false)
+  const ttsSpeakingRef = useRef(false)
+  const ttsLastStartRef = useRef(0)
   const ttsUnsupportedNotifiedRef = useRef(false)
   const pendingTtsRef = useRef<{ text: string; lang: string } | null>(null)
   const ttsDeferredTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -279,6 +283,13 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   useEffect(() => {
     ttsUnlockedRef.current = isTtsUnlocked
   }, [isTtsUnlocked])
+
+  useEffect(() => {
+    ttsSpeakingRef.current = ttsSpeaking
+    if (ttsSpeaking) {
+      ttsLastStartRef.current = Date.now()
+    }
+  }, [ttsSpeaking])
 
   // Native ASR Callbacks
   useEffect(() => {
@@ -1559,6 +1570,14 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     const transcript = remoteLiveTranscript.trim()
     if (!transcript) {
       setRemoteLiveTranslation("")
+      if (remoteTranslateTimerRef.current) {
+        clearTimeout(remoteTranslateTimerRef.current)
+        remoteTranslateTimerRef.current = null
+      }
+      if (remoteTranslateAbortRef.current) {
+        remoteTranslateAbortRef.current.abort()
+        remoteTranslateAbortRef.current = null
+      }
       return
     }
     const detectedSource = detectLanguageFromText(transcript)
@@ -1576,10 +1595,9 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     const detectedPrimary = primaryOf(detectedSource)
     const targetPrimary = primaryOf(targetCode)
 
-    if (remoteTranslateTimerRef.current) {
-      clearTimeout(remoteTranslateTimerRef.current)
-      remoteTranslateTimerRef.current = null
-    }
+    remoteTranslateLatestRef.current = transcript
+    remoteTranslateSourceRef.current = sourceCode
+    remoteTranslateTargetRef.current = targetCode
 
     if (detectedPrimary && sourcePrimary && detectedPrimary !== sourcePrimary) {
       setRemoteLiveSourceLanguage(detectedSource)
@@ -1704,20 +1722,44 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     // Let's look at `formattedRemoteLiveTranscript` and `formattedRemoteLiveTranslation`.
     // We need to see that code.
 
-    remoteTranslateTimerRef.current = setTimeout(() => {
-      if (remoteTranslateAbortRef.current) remoteTranslateAbortRef.current.abort()
-      const controller = new AbortController()
-      remoteTranslateAbortRef.current = controller
-      void translateText(transcript, sourceCode, targetCode, controller.signal)
-        .then((translated) => {
-          if (!controller.signal.aborted) setRemoteLiveTranslation(translated)
-        })
-        .catch(() => { })
-        .finally(() => {
-          if (remoteTranslateAbortRef.current === controller) remoteTranslateAbortRef.current = null
-        })
-    }, 150)
+    const scheduleTranslate = () => {
+      if (remoteTranslateTimerRef.current) return
+      remoteTranslateTimerRef.current = setTimeout(() => {
+        const latestTranscript = remoteTranslateLatestRef.current.trim()
+        if (!latestTranscript) {
+          remoteTranslateTimerRef.current = null
+          return
+        }
+        if (remoteTranslateAbortRef.current) remoteTranslateAbortRef.current.abort()
+        const controller = new AbortController()
+        remoteTranslateAbortRef.current = controller
+        const source = remoteTranslateSourceRef.current
+        const target = remoteTranslateTargetRef.current
+        void translateText(latestTranscript, source, target, controller.signal)
+          .then((translated) => {
+            if (!controller.signal.aborted) setRemoteLiveTranslation(translated)
+          })
+          .catch(() => { })
+          .finally(() => {
+            if (remoteTranslateAbortRef.current === controller) remoteTranslateAbortRef.current = null
+            remoteTranslateTimerRef.current = null
+            if (remoteTranslateLatestRef.current.trim() !== latestTranscript) {
+              scheduleTranslate()
+            }
+          })
+      }, 150)
+    }
+    scheduleTranslate()
 
+    return () => {
+      if (remoteTranslateAbortRef.current) {
+        remoteTranslateAbortRef.current.abort()
+        remoteTranslateAbortRef.current = null
+      }
+    }
+  }, [callStatus, detectLanguageFromText, primaryOf, remoteLiveSourceLanguage, remoteLiveTranscript, targetLanguage.code])
+
+  useEffect(() => {
     return () => {
       if (remoteTranslateTimerRef.current) {
         clearTimeout(remoteTranslateTimerRef.current)
@@ -1728,7 +1770,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         remoteTranslateAbortRef.current = null
       }
     }
-  }, [callStatus, detectLanguageFromText, primaryOf, remoteLiveSourceLanguage, remoteLiveTranscript, targetLanguage.code])
+  }, [])
 
   useEffect(() => {
     if (callStatus !== "active") return
@@ -1754,13 +1796,6 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     if (text === remoteLastSpokenTextRef.current) return
     if (ttsSupported && !ttsUnlockedRef.current) {
       pendingTtsRef.current = { text, lang: targetLanguage.code }
-      if (!ttsUnlockPromptedRef.current) {
-        ttsUnlockPromptedRef.current = true
-        toast({
-          title: "点击屏幕启用语音播放",
-          description: "需要先点击页面，系统才允许播放语音。",
-        })
-      }
       return
     }
     const shouldSpeak = /[。！？.!?]$/.test(text) || text.length >= 20
@@ -1775,13 +1810,6 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         if (remoteLastSpokenTextRef.current === text) return
         if (ttsSupported && !ttsUnlockedRef.current) {
           pendingTtsRef.current = { text, lang: targetLanguage.code }
-          if (!ttsUnlockPromptedRef.current) {
-            ttsUnlockPromptedRef.current = true
-            toast({
-              title: "点击屏幕启用语音播放",
-              description: "需要先点击页面，系统才允许播放语音。",
-            })
-          }
           return
         }
         speak(text, targetLanguage.code)
@@ -1870,21 +1898,98 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     }
   }, [speak, toast, ttsSupported, unlockTts])
 
-  const handleTestTts = useCallback(() => {
-    if (!ttsSupported) {
-      toast({
-        title: "当前浏览器不支持语音播放",
-        description: "请使用系统浏览器或关闭静音模式后再试。",
-        variant: "destructive",
-      })
-      return
+  const playBeep = useCallback(async () => {
+    try {
+      if (typeof window === "undefined") return { ok: false, state: "no-window" }
+      const AudioContextImpl = window.AudioContext || (window as any).webkitAudioContext
+      if (!AudioContextImpl) return { ok: false, state: "no-audio-context" }
+      const ctx = new AudioContextImpl()
+      const initialState = ctx.state
+      if (ctx.state === "suspended") {
+        await ctx.resume()
+      }
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.frequency.value = 880
+      gain.gain.value = 0.2
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start()
+      osc.stop(ctx.currentTime + 0.25)
+      setTimeout(() => {
+        ctx.close()
+      }, 400)
+      return { ok: true, state: initialState }
+    } catch {
+      return { ok: false, state: "error" }
     }
-    if (!ttsUnlockedRef.current) {
-      void handleUnlockTts()
-      return
+  }, [])
+
+  // Keep a ref to the test audio to prevent GC
+  const testAudioRef = useRef<HTMLAudioElement | null>(null)
+
+  const handleTestTts = useCallback(async () => {
+    // 1. Try standard TTS
+    speakWithOptions("语音测试", targetLanguage.code, { volume: 1.0, rate: 1.0, immediate: true })
+
+    // 2. Synchronously create and play Online TTS as backup
+    try {
+      const text = "语音测试"
+      const proxyUrl = `/api/tts?text=${encodeURIComponent(text)}&lang=${targetLanguage.code}`
+      
+      // Stop previous test audio if playing
+      if (testAudioRef.current) {
+        testAudioRef.current.pause()
+        testAudioRef.current = null
+      }
+
+      const audio = new Audio(proxyUrl)
+      testAudioRef.current = audio
+      audio.volume = 1.0
+      
+      let hasPlayed = false
+      audio.onplay = () => { hasPlayed = true }
+      audio.onerror = (e) => {
+        console.error("Direct Audio error:", e)
+        // If online audio fails, try beep as last resort
+        playBeep().then(res => {
+          if (!res.ok) {
+            toast({
+               title: "音频系统故障",
+               description: "无法播放网络语音，且无法启动蜂鸣器，请检查系统音频。",
+               variant: "destructive"
+            })
+          } else {
+             toast({
+               title: "网络语音失败",
+               description: "已播放蜂鸣提示音。可能是服务端代理无法连接语音服务器。",
+               variant: "destructive"
+            })
+          }
+        })
+      }
+
+      const p = audio.play()
+      if (p !== undefined) {
+        p.catch(error => {
+          console.error("Direct Audio play failed:", error)
+          // If play blocked or failed
+          playBeep().then(() => {
+             toast({
+               title: "语音播放被拦截",
+               description: `错误: ${error.message || "未知错误"}。已尝试蜂鸣。`,
+               variant: "destructive"
+            })
+          })
+        })
+      }
+
+    } catch (e) {
+      console.error("Direct Audio setup failed:", e)
+      playBeep()
     }
-    speak("语音测试", targetLanguage.code)
-  }, [handleUnlockTts, speak, targetLanguage.code, toast, ttsSupported])
+
+  }, [playBeep, speakWithOptions, targetLanguage.code, toast])
 
   useEffect(() => {
     const el = remoteAudioRef.current
@@ -2913,7 +3018,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
               messages={messages}
               speechRate={settings.speechRate}
               speechVolume={settings.speechVolume}
-              autoPlay={false}
+              autoPlay={settings.autoPlayTranslations && callStatus !== "active"}
             />
 
             <div className="shrink-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-t border-border shadow-sm">
