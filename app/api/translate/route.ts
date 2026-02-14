@@ -1,6 +1,8 @@
 import { generateText } from "ai"
 import { mistral } from "@ai-sdk/mistral"
 import { createOpenAI } from "@ai-sdk/openai"
+import { type NextRequest, NextResponse } from "next/server"
+import { apiRateLimit } from "@/lib/rate-limit"
 
 export const maxDuration = 30
 
@@ -73,7 +75,13 @@ function normalizeLanguageLabel(value: unknown): string {
   return raw
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  // 应用限流
+  const rateLimitCheck = await apiRateLimit()(req)
+  if (rateLimitCheck) {
+    return rateLimitCheck
+  }
+
   try {
     const deployTarget = String(process.env.DEPLOY_TARGET ?? "").trim().toLowerCase()
     const isTencent = deployTarget === "tencent"

@@ -109,18 +109,22 @@ export async function getMariaPool(): Promise<MariaDbPool> {
     globalForPrisma.prismaLogOnce = true
   }
   const { createPool } = await import("mariadb")
+  // 优化连接池配置：减少连接数，增加空闲超时
   const pool = createPool({
     host: url.hostname,
     port: Number(url.port || 3306),
     user: decodeURIComponent(url.username),
     password: decodeURIComponent(url.password),
     database: url.pathname.replace(/^\//, ""),
-    connectionLimit: 5,
-    connectTimeout: 10000,
-    acquireTimeout: 10000,
-    socketTimeout: 10000,
+    connectionLimit: 2, // 从5降到2，减少资源消耗
+    connectTimeout: 30000,
+    acquireTimeout: 30000,
+    socketTimeout: 60000,
+    idleTimeout: 300000, // 5分钟空闲后关闭连接
+    leakDetectionTimeout: 60000, // 检测连接泄漏
   })
-  if (process.env.NODE_ENV !== "production") globalForPrisma.mariaPool = pool
+  // 始终缓存连接池实例
+  globalForPrisma.mariaPool = pool
   return pool
 }
 
@@ -151,6 +155,7 @@ export async function getPrisma(): Promise<PrismaClientLike> {
       globalForPrisma.prismaLogOnce = true
     }
     const { PrismaMariaDb } = await import("@prisma/adapter-mariadb")
+    // 优化连接池配置：减少连接数，增加超时时间
     const adapter = new PrismaMariaDb(
       {
         host: url.hostname,
@@ -158,10 +163,11 @@ export async function getPrisma(): Promise<PrismaClientLike> {
         user: decodeURIComponent(url.username),
         password: decodeURIComponent(url.password),
         database: url.pathname.replace(/^\//, ""),
-        connectionLimit: 5,
-        connectTimeout: 10000,
-        acquireTimeout: 10000,
-        socketTimeout: 10000,
+        connectionLimit: 2, // 减少连接数，从5降到2
+        connectTimeout: 30000, // 增加超时时间
+        acquireTimeout: 30000,
+        socketTimeout: 60000,
+        idleTimeout: 300000, // 5分钟空闲超时
       },
       {
         onConnectionError: (err) => {
@@ -171,8 +177,12 @@ export async function getPrisma(): Promise<PrismaClientLike> {
         },
       }
     )
-    const prisma = new PrismaClient({ adapter })
-    if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma
+    const prisma = new PrismaClient({ 
+      adapter,
+      log: process.env.NODE_ENV === "development" ? ["error", "warn"] : undefined,
+    })
+    // 始终缓存 Prisma 客户端实例，避免重复创建连接
+    globalForPrisma.prisma = prisma
     return prisma
   }
   const prisma = new PrismaClient({})

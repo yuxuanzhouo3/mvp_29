@@ -4,6 +4,7 @@ import type { Message, User } from "@/lib/store/types"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { Prisma } from "@prisma/client"
 import { getMariaPool, getPrisma } from "@/lib/prisma"
+import { roomsRateLimit } from "@/lib/rate-limit"
 import crypto from "node:crypto"
 
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000
@@ -12,6 +13,9 @@ const SIGNAL_TTL_MS = 60 * 1000
 const SETTINGS_KEY = "rooms_auto_delete_after_24h"
 const ROOM_ACTIVITY_COLUMN = "last_activity_at"
 const ROOM_SETTINGS_PREFIX = "room:"
+
+// poll 限流配置
+const POLL_RATE_LIMIT_MS = 1000  // poll 请求最小间隔1秒
 
 type SettingsCache = { value: boolean; fetchedAt: number }
 type CleanupCache = { lastRunAt: number }
@@ -27,6 +31,7 @@ const globalForRoomSettings = globalThis as unknown as {
   __voicelinkRoomJoinSettings?: Map<string, unknown>
   __voicelinkAppSettingsOpenid?: { value: boolean; fetchedAt: number }
   __voicelinkRoomSignals?: Map<string, Array<{ to: string; from: string; payload: unknown; createdAt: number }>>
+  __voicelinkPollRateLimit?: Map<string, number>  // poll 限流缓存
 }
 
 if (!globalForRoomSettings.__voicelinkRoomSignals) {
@@ -433,6 +438,12 @@ function parseMessage(value: unknown): Message | null {
 }
 
 export async function POST(request: NextRequest) {
+  // 应用限流
+  const rateLimitCheck = await roomsRateLimit()(request)
+  if (rateLimitCheck) {
+    return rateLimitCheck
+  }
+
   try {
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null
     if (!body) {
@@ -859,6 +870,26 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 })
       }
 
+      const rid = roomId.trim()
+      const uid = typeof userId === "string" ? userId.trim() : ""
+      
+      // poll 频率限制检查
+      if (!globalForRoomSettings.__voicelinkPollRateLimit) {
+        globalForRoomSettings.__voicelinkPollRateLimit = new Map()
+      }
+      const pollKey = `${rid}:${uid || 'anonymous'}`
+      const lastPoll = globalForRoomSettings.__voicelinkPollRateLimit.get(pollKey) || 0
+      const nowMs = Date.now()
+      if (nowMs - lastPoll < POLL_RATE_LIMIT_MS) {
+        // 请求过于频繁，返回缓存数据或简单响应
+        return NextResponse.json({ 
+          success: true,
+          throttled: true,
+          retryAfter: POLL_RATE_LIMIT_MS - (nowMs - lastPoll)
+        }, { status: 429 })
+      }
+      globalForRoomSettings.__voicelinkPollRateLimit.set(pollKey, nowMs)
+
       if (settingsStore.kind !== "memory") {
         const expired = await cleanupRoomIfExpired(settingsStore, roomId.trim())
         if (expired) {
@@ -866,10 +897,7 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      const rid = roomId.trim()
-      const uid = typeof userId === "string" ? userId.trim() : ""
       const nowIso = new Date().toISOString()
-      const nowMs = Date.now()
 
       const roomData = await store.getRoom(rid)
       if (!roomData) {

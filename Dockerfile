@@ -45,6 +45,10 @@ WORKDIR /app
 ARG NODE_ENV=production
 ENV NODE_ENV=$NODE_ENV
 
+# 优化 Node.js 内存使用和性能
+ENV NODE_OPTIONS="--max-old-space-size=384 --optimize-for-size"
+ENV NEXT_TELEMETRY_DISABLED=1
+
 ARG PORT=3000
 ENV PORT=${PORT}
 

@@ -12,16 +12,17 @@
           "localPath": "./",
           "uploadType": "package",
           "containerPort": 3000,
-          "cpu": 0.5,
-          "mem": 1,
+          "cpu": 0.25,
+          "mem": 0.5,
           "minNum": 0,
-          "maxNum": 50,
+          "maxNum": 10,
           "policyDetails": [
             {
               "policyType": "cpu",
-              "policyThreshold": 60
+              "policyThreshold": 70
             }
           ],
+          "idleTimeoutSeconds": 60,
           "envVariables": {
             "DEPLOY_TARGET": "tencent",
             "NEXT_PUBLIC_DEPLOY_TARGET": "tencent",
