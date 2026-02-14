@@ -167,6 +167,8 @@ export function LandingPage({ showFull = true }: { showFull?: boolean }) {
                       <li>{t("dashboard.room.feature1")}</li>
                       <li>{t("dashboard.room.feature2")}</li>
                       <li>{t("dashboard.room.feature3")}</li>
+                      <li>{t("dashboard.room.feature4")}</li>
+                      <li>{t("dashboard.room.feature5")}</li>
                     </ul>
                   </CardContent>
                 </Card>

@@ -41,33 +41,32 @@ export class TencentASR {
         try {
             // 1. Get Signature and Config from Backend
             const res = await fetch("/api/transcribe/stream?action=get_signature", { method: "POST" });
+            const data = await res.json();
+
             if (!res.ok) {
+                console.error("ASR Signature Error:", data);
                 throw new Error("Failed to get ASR signature");
             }
-            const config = await res.json();
-            const { signature, secretid, timestamp, expired, nonce, engine_model_type, voice_id, voice_format, needvad, appid, vad_silence_time, punc, filter_dirty, filter_modal, filter_punc, convert_num_mode, word_info } = config;
 
             // 2. Construct WebSocket URL
-            const wsUrl = `wss://asr.cloud.tencent.com/asr/v2/${appid}?` +
-                `secretid=${secretid}&` +
-                `timestamp=${timestamp}&` +
-                `expired=${expired}&` +
-                `nonce=${nonce}&` +
-                `engine_model_type=${engine_model_type}&` +
-                `voice_id=${voice_id}&` +
-                `voice_format=${voice_format}&` +
-                `needvad=${needvad}&` +
-                `vad_silence_time=${vad_silence_time ?? 800}&` +
-                `punc=${punc ?? 0}&` +
-                `filter_dirty=${filter_dirty ?? 1}&` +
-                `filter_modal=${filter_modal ?? 1}&` +
-                `filter_punc=${filter_punc ?? 0}&` +
-                `convert_num_mode=${convert_num_mode ?? 1}&` +
-                `word_info=${word_info ?? 0}&` +
-                `signature=${encodeURIComponent(signature)}`;
+            // If backend provides pre-signed wsUrl, use it directly (Recommended)
+            let wsUrl = data.url;
+
+            if (!wsUrl && data.wsUrl) {
+                wsUrl = data.wsUrl;
+            }
+
+            console.log("Connecting to ASR URL:", wsUrl);
+            // DEBUG: 打印后端返回的签名原串，方便与文档对比
+            if (data.signStr) {
+                console.log("[DEBUG] Server Sign String:", data.signStr);
+            }
+            if (data.debugCurl) {
+                console.log("[DEBUG] Test Curl Command (Copy and run in terminal to verify):");
+                console.log(data.debugCurl);
+            }
 
             // 3. Initialize WebSocket
-            this.isConnecting = true;
             this.ws = new WebSocket(wsUrl);
 
             this.ws.onopen = () => {
@@ -110,157 +109,82 @@ export class TencentASR {
                             this.callbacks.OnRecognitionResultChange?.({ result: data.result });
                         }
                     }
-                } catch (e) {
-                    console.error("Error parsing ASR message", e);
+                } catch (err) {
+                    console.error("Failed to parse ASR message", err);
                 }
             };
 
-            // 4. Start Audio Processing if track is provided
-            if (this.audioTrack) {
-                await this.startAudioProcessing();
-            }
-
-        } catch (e) {
-            console.error("Failed to start ASR", e);
-            this.callbacks.OnError?.(e);
-            this.stop();
+            // Initialize audio processing
+            this.initAudioProcessing();
+        } catch (err) {
+            console.error("Failed to start ASR", err);
+            this.callbacks.OnError?.(err);
+            this.isRunning = false;
         }
     }
 
-    // Allow external feeding of audio data (e.g. from Android Native Bridge)
-    public feedAudio(pcmData: Int16Array) {
-        if (!this.isRunning) return;
-        this.sendAudio(pcmData);
-    }
-
-    private async startAudioProcessing() {
+    private initAudioProcessing() {
         if (!this.audioTrack) return;
-        const AudioContextCtor = (window.AudioContext || (window as any).webkitAudioContext);
-        if (!AudioContextCtor) throw new Error("AudioContext not supported");
 
-        this.audioContext = new AudioContextCtor({ sampleRate: 16000 });
-
-        // Use the MediaStreamTrack directly
-        const stream = new MediaStream([this.audioTrack]);
-
-        this.mediaStreamSource = this.audioContext.createMediaStreamSource(stream);
-
-        // Use ScriptProcessor for resampling and extraction
-        // Buffer size 4096 is safer for performance, but 1024 is lower latency
-        // Tencent ASR expects 16k PCM
-        this.processor = this.audioContext.createScriptProcessor(1024, 1, 1);
-
-        this.mediaStreamSource.connect(this.processor);
-        this.processor.connect(this.audioContext.destination); // Required for Chrome to fire events
-
-        this.processor.onaudioprocess = (event) => {
-            if (!this.isRunning) return;
-
-            const input = event.inputBuffer.getChannelData(0);
-
-            // Resample if context is not 16k (though we requested 16k, some browsers ignore it)
-            // But we created AudioContext with sampleRate: 16000, so it should be 16k.
-            // Let's verify.
-            let pcmData: Int16Array;
-
-            if (event.inputBuffer.sampleRate === 16000) {
-                pcmData = new Int16Array(input.length);
-                for (let i = 0; i < input.length; i++) {
-                    const s = Math.max(-1, Math.min(1, input[i]));
-                    pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        try {
+            this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+            this.mediaStreamSource = this.audioContext.createMediaStreamSource(new MediaStream([this.audioTrack]));
+            
+            // Create a ScriptProcessorNode with a bufferSize of 4096 and a single input and output channel
+            this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+            
+            this.processor.onaudioprocess = (event) => {
+                if (!this.isRunning || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+                
+                const inputData = event.inputBuffer.getChannelData(0);
+                
+                // Convert float32 audio to int16
+                const dataLength = inputData.length;
+                const intData = new Int16Array(dataLength);
+                
+                for (let i = 0; i < dataLength; i++) {
+                    const s = Math.max(-1, Math.min(1, inputData[i]));
+                    intData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
                 }
-            } else {
-                // Resample to 16k
-                const targetSampleRate = 16000;
-                const sourceSampleRate = event.inputBuffer.sampleRate;
-                const ratio = sourceSampleRate / targetSampleRate;
-                const newLength = Math.round(input.length / ratio);
-                pcmData = new Int16Array(newLength);
-
-                for (let i = 0; i < newLength; i++) {
-                    const srcIdx = Math.floor(i * ratio);
-                    let val = input[srcIdx];
-                    if (srcIdx + 1 < input.length) {
-                        const frac = (i * ratio) - srcIdx;
-                        val = val * (1 - frac) + input[srcIdx + 1] * frac;
-                    }
-                    const s = Math.max(-1, Math.min(1, val));
-                    pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                }
-            }
-
-            this.sendAudio(pcmData);
-        };
-    }
-
-    private sendAudio(pcmData: Int16Array) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            // Flush buffer if any
-            this.flushAudioBuffer();
-            this.ws.send(pcmData.buffer);
-        } else if (this.isConnecting) {
-            // Buffer
-            this.audioBuffer.push(pcmData);
-            this.audioBufferLen += pcmData.length;
-            // Limit buffer to ~5s
-            if (this.audioBufferLen > 16000 * 5) {
-                const removeCount = this.audioBuffer[0].length;
-                this.audioBuffer.shift();
-                this.audioBufferLen -= removeCount;
-            }
+                
+                // Send raw PCM data
+                this.ws.send(intData.buffer);
+            };
+            
+            this.mediaStreamSource.connect(this.processor);
+            this.processor.connect(this.audioContext.destination);
+            
+        } catch (e) {
+            console.error("Failed to initialize audio processing", e);
+            this.callbacks.OnError?.(e);
         }
     }
 
     private flushAudioBuffer() {
-        if (this.audioBufferLen > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
-            const totalLen = this.audioBufferLen;
-            const merged = new Int16Array(totalLen);
-            let offset = 0;
-            for (const chunk of this.audioBuffer) {
-                merged.set(chunk, offset);
-                offset += chunk.length;
-            }
-            // Send in chunks
-            const CHUNK_SIZE = 12800; // 400ms
-            const buffer = merged.buffer;
-            let sentBytes = 0;
-            while (sentBytes < buffer.byteLength) {
-                const end = Math.min(sentBytes + CHUNK_SIZE, buffer.byteLength);
-                const chunk = buffer.slice(sentBytes, end);
-                this.ws.send(chunk);
-                sentBytes = end;
-            }
-            this.audioBuffer = [];
-            this.audioBufferLen = 0;
-        }
+        // Implementation for flushing buffer if needed
     }
 
     stop() {
         this.isRunning = false;
-        this.isConnecting = false;
-
-        if (this.ws) {
-            this.ws.close();
-            this.ws = null;
-        }
-
+        
         if (this.processor) {
             this.processor.disconnect();
             this.processor = null;
         }
-
+        
         if (this.mediaStreamSource) {
             this.mediaStreamSource.disconnect();
             this.mediaStreamSource = null;
         }
-
+        
         if (this.audioContext) {
             this.audioContext.close();
             this.audioContext = null;
         }
-
-        this.audioBuffer = [];
-        this.audioBufferLen = 0;
-        this.callbacks.OnRecognitionComplete?.({});
+        
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+        }
     }
 }

@@ -2,6 +2,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { createClient } from "@supabase/supabase-js";
 import { Users, MessageSquare, Activity } from "lucide-react";
 import { getPrisma } from "@/lib/prisma";
+import { TrtcToggle } from "./trtc-toggle";
+import { getTrtcEnabled } from "@/app/admin/actions";
 
 export const dynamic = 'force-dynamic';
 
@@ -16,6 +18,11 @@ export default async function AdminDashboard() {
   let userCount = 0;
   let roomCount = 0;
   let messageCount = 0;
+  let trtcEnabled = false;
+
+  // 获取 TRTC 设置
+  const trtcRes = await getTrtcEnabled();
+  trtcEnabled = trtcRes.success ? trtcRes.enabled : false;
 
   if (isTencent) {
     const prisma = await getPrisma()
@@ -83,6 +90,9 @@ export default async function AdminDashboard() {
         </Card>
       </div>
       
+      {/* TRTC 开关 */}
+      <TrtcToggle initialEnabled={trtcEnabled} />
+
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
         <Card className="col-span-4">
           <CardHeader>
@@ -110,7 +120,7 @@ export default async function AdminDashboard() {
                 </div>
                 <div className="flex items-center justify-between">
                     <span className="text-sm font-medium">语音服务</span>
-                    <span className="text-sm text-green-500">运行中</span>
+                    <span className="text-sm text-green-500">{trtcEnabled ? "TRTC模式" : "标准模式"}</span>
                 </div>
              </div>
           </CardContent>

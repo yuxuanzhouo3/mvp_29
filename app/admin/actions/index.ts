@@ -427,3 +427,80 @@ export async function setRoomsAutoDeleteEnabled(enabled: boolean) {
     return { success: false, error: error instanceof Error ? error.message : "Unknown error" }
   }
 }
+
+// TRTC 功能开关
+const TRTC_ENABLED_SETTING_KEY = "trtc_enabled"
+
+export async function getTrtcEnabled() {
+  try {
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      const row = await prisma.appSetting.findUnique({ where: { key: TRTC_ENABLED_SETTING_KEY } })
+      const value = row?.value
+      const enabled =
+        typeof value === "boolean"
+          ? value
+          : typeof value === "object" &&
+              value !== null &&
+              typeof (value as { enabled?: unknown }).enabled === "boolean"
+            ? Boolean((value as { enabled: boolean }).enabled)
+            : false
+      return { success: true, enabled }
+    }
+
+    const supabase = getSupabase()
+    const { data, error } = await supabase
+      .from("app_settings")
+      .select("value")
+      .eq("key", TRTC_ENABLED_SETTING_KEY)
+      .maybeSingle()
+
+    if (error) return { success: true, enabled: false }
+    const value = (data as { value?: unknown } | null)?.value
+    const enabled =
+      typeof value === "boolean"
+        ? value
+        : typeof value === "object" && value !== null && typeof (value as { enabled?: unknown }).enabled === "boolean"
+          ? Boolean((value as { enabled: boolean }).enabled)
+          : false
+
+    return { success: true, enabled }
+  } catch (error: unknown) {
+    console.error("Get TRTC enabled setting error:", error)
+    return { success: true, enabled: false }
+  }
+}
+
+export async function setTrtcEnabled(enabled: boolean) {
+  try {
+    if (isTencentTarget()) {
+      const prisma = await getPrisma()
+      const value = Boolean(enabled) as Prisma.InputJsonValue
+      await prisma.appSetting.upsert({
+        where: { key: TRTC_ENABLED_SETTING_KEY },
+        create: { key: TRTC_ENABLED_SETTING_KEY, value },
+        update: { value },
+      })
+    } else {
+      const supabase = getSupabase()
+      const { error } = await supabase
+        .from("app_settings")
+        .upsert(
+          {
+            key: TRTC_ENABLED_SETTING_KEY,
+            value: Boolean(enabled),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "key" },
+        )
+
+      if (error) throw error
+    }
+
+    revalidatePath("/admin")
+    return { success: true }
+  } catch (error: unknown) {
+    console.error("Set TRTC enabled setting error:", error)
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" }
+  }
+}

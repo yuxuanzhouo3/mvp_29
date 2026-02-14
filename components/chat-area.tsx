@@ -164,29 +164,13 @@ export function ChatArea({
     return () => clearTimeout(timer)
   }, [messages.length, lastMessageId, lastMessageIsUser, lastMessageContent])
 
+  // 自动播放已禁用：只有用户点击时才播放，进入房间时不会自动播放
+  // 保留此 effect 用于跟踪最后一条消息 ID，但不触发自动播放
   useEffect(() => {
-    if (autoPlay && messages.length > 0) {
-      const lastMessage = messages[messages.length - 1]
-      if (lastMessage.id !== lastMessageIdRef.current) {
-        lastMessageIdRef.current = lastMessage.id
-        if (audioRef.current) {
-          audioRef.current.pause()
-          audioRef.current.currentTime = 0
-          audioRef.current = null
-        }
-        const audioUrl = lastMessage.audioUrl
-        if (lastMessage.isUser && audioUrl) {
-          queueMicrotask(() => playAudioUrl(`${lastMessage.id}-original`, audioUrl))
-        } else {
-          const languageCode = getSpeechLanguageCode(lastMessage.targetLanguage)
-          queueMicrotask(() => {
-            speak(lastMessage.translatedText, languageCode)
-            setPlayingMessageId(`${lastMessage.id}-translated`)
-          })
-        }
-      }
+    if (messages.length > 0) {
+      lastMessageIdRef.current = messages[messages.length - 1].id
     }
-  }, [messages, autoPlay, speak])
+  }, [messages])
 
   const handlePlayTranslated = (message: Message) => {
     const targetId = getPrimaryPlayId(message)

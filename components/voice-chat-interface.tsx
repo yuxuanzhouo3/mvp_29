@@ -13,7 +13,7 @@ import { useToast } from "@/hooks/use-toast"
 import type { AppSettings } from "@/components/settings-dialog"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { LogOut, Copy, Check, Settings, Users, Mic, MicOff, PhoneOff, Phone } from "lucide-react"
+import { LogOut, Copy, Check, Settings, Users, Mic, MicOff, PhoneOff, Phone, Video, VideoOff, ScreenShare, ScreenShareOff } from "lucide-react"
 import { useAuth } from "@/components/auth-provider"
 import { useI18n } from "@/components/i18n-provider"
 import { Sheet, SheetContent, SheetTrigger, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
@@ -194,6 +194,16 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const [callDurationSec, setCallDurationSec] = useState(0)
   const [isCallMuted, setIsCallMuted] = useState(false)
   const [callLiveEnabled, setCallLiveEnabled] = useState(true)
+  const [isVideoEnabled, setIsVideoEnabled] = useState(false)
+  const [isScreenSharing, setIsScreenSharing] = useState(false)
+  const [remoteVideoAvailable, setRemoteVideoAvailable] = useState(false)
+  const [remoteScreenAvailable, setRemoteScreenAvailable] = useState(false)
+  const [remoteVideoUserId, setRemoteVideoUserId] = useState<string | null>(null)
+  const [remoteScreenUserId, setRemoteScreenUserId] = useState<string | null>(null)
+  const [remoteVideoStreamType, setRemoteVideoStreamType] = useState<any>(null)
+  const [remoteScreenStreamType, setRemoteScreenStreamType] = useState<any>(null)
+  // TRTC 全局设置（从后台管理读取）
+  const [trtcGloballyEnabled, setTrtcGloballyEnabled] = useState<boolean | null>(null)
   const { toast } = useToast()
   const pollIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollAbortRef = useRef<AbortController | null>(null)
@@ -242,15 +252,23 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const aiTranscriberStateListenerRef = useRef<any>(null)
   const aiTranscriberCustomListenerRef = useRef<any>(null)
   const aiTranscriberRobotIdRef = useRef<string | null>(null)
+  const trtcErrorListenerRef = useRef<any>(null)
   const aiTranscriberTranslationRef = useRef<string>("")
   const aiTranscriberSourceLangRef = useRef<string>("")
   const aiTranscriberTargetLangRef = useRef<string>("")
   const trtcUserIdRef = useRef<string | null>(null)
   const trtcRoomIdRef = useRef<number | null>(null)
+  const trtcCleanupInProgressRef = useRef(false)
   const [trtcTranscriberActive, setTrtcTranscriberActive] = useState(false)
   const [trtcTranscriberTranslationActive, setTrtcTranscriberTranslationActive] = useState(false)
   const trtcTranscriberActiveRef = useRef(false)
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null)
+  const localVideoRef = useRef<HTMLDivElement | null>(null)
+  const remoteVideoRef = useRef<HTMLDivElement | null>(null)
+  const localScreenRef = useRef<HTMLDivElement | null>(null)
+  const remoteScreenRef = useRef<HTMLDivElement | null>(null)
+  const remoteVideoStartedRef = useRef<string | null>(null)
+  const remoteScreenStartedRef = useRef<string | null>(null)
   const liveListenRef = useRef(false)
   const { speak, speakWithOptions, unlock: unlockTts, isSupported: ttsSupported, isUnlocked: isTtsUnlocked, isSpeaking: ttsSpeaking, getVoices, getLastVoice } = useTextToSpeech({
     rate: settings.speechRate,
@@ -273,12 +291,67 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const ttsDeferredTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const ttsDeferredTextRef = useRef("")
   const ttsDeferredFullRef = useRef("")
+  const finalCaptionDedupRef = useRef<Map<string, { text: string; at: number }>>(new Map())
+
+  // 获取 TRTC 全局设置
+  useEffect(() => {
+    let mounted = true
+    fetch("/api/settings/trtc")
+      .then((res) => res.json())
+      .then((data) => {
+        if (mounted) {
+          const enabled = data.enabled === true
+          setTrtcGloballyEnabled(enabled)
+        }
+      })
+      .catch((err) => {
+        console.error("[TRTC] Failed to fetch setting:", err)
+        if (mounted) {
+          setTrtcGloballyEnabled(false)
+        }
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
 
   useEffect(() => {
     callStatusRef.current = callStatus
     callPeerRef.current = callPeer
     callIdRef.current = callId
   }, [callStatus, callPeer, callId])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const shouldIgnore = (message: string) => {
+      const normalized = String(message || "").toLowerCase()
+      return (
+        normalized.includes("api_call_aborted") ||
+        normalized.includes("unsubscribe aborted") ||
+        normalized.includes("0x404d") ||
+        (normalized.includes("connection closed") && normalized.includes("unsubscribe"))
+      )
+    }
+    const handleError = (event: ErrorEvent) => {
+      const message = event?.message || event?.error?.message || ""
+      if (shouldIgnore(message)) {
+        event.preventDefault?.()
+      }
+    }
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      const reason = event?.reason
+      const message = typeof reason === "string" ? reason : reason?.message || ""
+      if (shouldIgnore(message)) {
+        event.preventDefault?.()
+      }
+    }
+    window.addEventListener("error", handleError)
+    window.addEventListener("unhandledrejection", handleRejection)
+    return () => {
+      window.removeEventListener("error", handleError)
+      window.removeEventListener("unhandledrejection", handleRejection)
+    }
+  }, [])
 
   useEffect(() => {
     ttsUnlockedRef.current = isTtsUnlocked
@@ -435,14 +508,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     fallbackBufferedSamplesRef.current = 0
   }, [])
 
-  const stopTrtcRealtimeTranscriber = useCallback(async () => {
-    const trtc = trtcRef.current
-    const robotId = aiTranscriberRobotIdRef.current
-    if (trtc && robotId && trtcTranscriberActiveRef.current) {
-      try {
-        await trtc.stopPlugin("RealtimeTranscriber", { transcriberRobotId: robotId })
-      } catch { }
-    }
+  const resetTrtcTranscriberState = useCallback(() => {
     aiTranscriberRobotIdRef.current = null
     aiTranscriberTranslationRef.current = ""
     aiTranscriberSourceLangRef.current = ""
@@ -453,36 +519,162 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     trtcCustomCaptionActiveRef.current = false
   }, [])
 
+  const stopTrtcRealtimeTranscriber = useCallback(async () => {
+    const trtc = trtcRef.current
+    const robotId = aiTranscriberRobotIdRef.current
+    if (trtc && robotId && trtcTranscriberActiveRef.current) {
+      try {
+        await trtc.stopPlugin("RealtimeTranscriber", { transcriberRobotId: robotId })
+      } catch { }
+    }
+    resetTrtcTranscriberState()
+  }, [resetTrtcTranscriberState])
+
+  const isTrtcAbortError = useCallback((error: any) => {
+    const message = error?.errorMessage || error?.message || error
+    const normalized = String(message || "").toLowerCase()
+    const codeValue = typeof error?.errorCode === "number"
+      ? error.errorCode
+      : Number.parseInt(String(error?.errorCode ?? error?.code ?? ""), 10)
+    return (
+      normalized.includes("api_call_aborted") ||
+      normalized.includes("unsubscribe aborted") ||
+      codeValue === 0x404d ||
+      codeValue === 16461
+    )
+  }, [])
+
+  const safeStopLocalAudio = useCallback(async (trtc: any) => {
+    if (!trtc || typeof trtc.stopLocalAudio !== "function") return
+    try {
+      await Promise.resolve(trtc.stopLocalAudio())
+    } catch (err) {
+      if (!isTrtcAbortError(err)) {
+        console.error("[TRTC] stopLocalAudio failed", err)
+      }
+    }
+  }, [isTrtcAbortError])
+
+  const safeStopLocalVideo = useCallback(async (trtc: any) => {
+    if (!trtc || typeof trtc.stopLocalVideo !== "function") return
+    try {
+      await Promise.resolve(trtc.stopLocalVideo())
+    } catch (err) {
+      if (!isTrtcAbortError(err)) {
+        console.error("[TRTC] stopLocalVideo failed", err)
+      }
+    }
+  }, [isTrtcAbortError])
+
+  const safeStopScreenShare = useCallback(async (trtc: any) => {
+    if (!trtc) return
+    const stopFn = trtc.stopScreenShare || trtc.stopScreenCapture || trtc.stopLocalScreen
+    if (typeof stopFn !== "function") return
+    try {
+      await Promise.resolve(stopFn.call(trtc))
+    } catch (err) {
+      if (!isTrtcAbortError(err)) {
+        console.error("[TRTC] stopScreenShare failed", err)
+      }
+    }
+  }, [isTrtcAbortError])
+
+  const safeExitTrtcRoom = useCallback(async (trtc: any) => {
+    if (!trtc || typeof trtc.exitRoom !== "function") return
+    try {
+      await Promise.resolve(trtc.exitRoom())
+    } catch (err) {
+      if (!isTrtcAbortError(err)) {
+        console.error("[TRTC] exitRoom failed", err)
+      }
+    }
+  }, [isTrtcAbortError])
+
+  const safeDestroyTrtc = useCallback(async (trtc: any) => {
+    if (!trtc || typeof trtc.destroy !== "function") return
+    try {
+      await Promise.resolve(trtc.destroy())
+    } catch (err) {
+      if (!isTrtcAbortError(err)) {
+        console.error("[TRTC] destroy failed", err)
+      }
+    }
+  }, [isTrtcAbortError])
+
 
   const cleanupTrtc = useCallback(async () => {
     const trtc = trtcRef.current
     if (!trtc) return
-    if (aiTranscriberListenerRef.current) {
-      trtc.off(TRTC.EVENT.REALTIME_TRANSCRIBER_MESSAGE, aiTranscriberListenerRef.current)
-      aiTranscriberListenerRef.current = null
-    }
-    if (aiTranscriberStateListenerRef.current) {
-      trtc.off(TRTC.EVENT.REALTIME_TRANSCRIBER_STATE_CHANGED, aiTranscriberStateListenerRef.current)
-      aiTranscriberStateListenerRef.current = null
-    }
-    if (aiTranscriberCustomListenerRef.current) {
-      trtc.off(TRTC.EVENT.CUSTOM_MESSAGE, aiTranscriberCustomListenerRef.current)
-      aiTranscriberCustomListenerRef.current = null
-    }
-    await stopTrtcRealtimeTranscriber()
+    if (trtcCleanupInProgressRef.current) return
+    trtcCleanupInProgressRef.current = true
     try {
-      trtc.stopLocalAudio()
-    } catch { }
-    try {
-      await trtc.exitRoom()
-    } catch { }
-    try {
-      trtc.destroy()
-    } catch { }
-    trtcRef.current = null
-    trtcUserIdRef.current = null
-    trtcRoomIdRef.current = null
-  }, [stopTrtcRealtimeTranscriber])
+      if (aiTranscriberListenerRef.current) {
+        trtc.off(TRTC.EVENT.REALTIME_TRANSCRIBER_MESSAGE, aiTranscriberListenerRef.current)
+        aiTranscriberListenerRef.current = null
+      }
+      if (aiTranscriberStateListenerRef.current) {
+        trtc.off(TRTC.EVENT.REALTIME_TRANSCRIBER_STATE_CHANGED, aiTranscriberStateListenerRef.current)
+        aiTranscriberStateListenerRef.current = null
+      }
+      if (aiTranscriberCustomListenerRef.current) {
+        trtc.off(TRTC.EVENT.CUSTOM_MESSAGE, aiTranscriberCustomListenerRef.current)
+        aiTranscriberCustomListenerRef.current = null
+      }
+      resetTrtcTranscriberState()
+      await safeStopScreenShare(trtc)
+      await safeStopLocalVideo(trtc)
+      await safeStopLocalAudio(trtc)
+      await safeExitTrtcRoom(trtc)
+      await safeDestroyTrtc(trtc)
+      trtcRef.current = null
+      trtcUserIdRef.current = null
+      trtcRoomIdRef.current = null
+    } finally {
+      trtcCleanupInProgressRef.current = false
+    }
+  }, [resetTrtcTranscriberState, safeDestroyTrtc, safeExitTrtcRoom, safeStopLocalAudio, safeStopLocalVideo, safeStopScreenShare])
+
+  const startCallFallbackAsr = useCallback(async () => {
+    if (tencentAsrRef.current) return
+    let stream = callStreamRef.current
+    if (!stream) {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      callStreamRef.current = stream
+    }
+    const audioTrack = stream.getAudioTracks()[0]
+    if (!audioTrack) {
+      throw new Error("No audio track")
+    }
+    tencentAsrRef.current = new TencentASR({
+      audioTrack,
+      OnRecognitionResultChange: (res: any) => {
+        if (res?.result?.voice_text_str) {
+          setLiveTranscript(sessionTranscriptRef.current + res.result.voice_text_str)
+          setIsInterim(true)
+        }
+      },
+      OnSentenceEnd: (res: any) => {
+        if (res?.result?.voice_text_str) {
+          const text = res.result.voice_text_str
+          sessionTranscriptRef.current += text
+          setConfirmedTranscript(sessionTranscriptRef.current)
+          setLiveTranscript(sessionTranscriptRef.current)
+          setIsInterim(false)
+        }
+      },
+      OnError: (err: any) => console.error("ASR Error", err)
+    })
+    tencentAsrRef.current.start()
+    setIsCallStreaming(true)
+  }, [])
+
+  const stopCallFallbackAsr = useCallback(() => {
+    if (tencentAsrRef.current) {
+      tencentAsrRef.current.stop()
+      tencentAsrRef.current = null
+    }
+    setIsCallStreaming(false)
+  }, [])
 
   const startTrtcRealtimeTranscriber = useCallback(async (options: {
     sourceLanguage: string
@@ -539,6 +731,14 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     setCallDurationSec(0)
     setIsCallMuted(false)
     setCallLiveEnabled(true)
+    setIsVideoEnabled(false)
+    setIsScreenSharing(false)
+    setRemoteVideoAvailable(false)
+    setRemoteScreenAvailable(false)
+    setRemoteVideoUserId(null)
+    setRemoteScreenUserId(null)
+    setRemoteVideoStreamType(null)
+    setRemoteScreenStreamType(null)
     setLiveTranscript("")
     setLiveTranslation("")
     setLiveTranscriptLines([])
@@ -830,7 +1030,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           audioTrack,
           OnRecognitionResultChange: (res: any) => {
             if (res?.result?.voice_text_str) {
-              setLiveTranscript(sessionTranscriptRef.current + res.result.voice_text_str)
+              setLiveTranscript(mergeLiveDisplay(sessionTranscriptRef.current, res.result.voice_text_str))
               setIsInterim(true)
             }
           },
@@ -891,10 +1091,14 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     const res = await fetch(`/api/trtc/user-sig?userId=${encodeURIComponent(userId)}`)
     if (!res.ok) throw new Error("Failed to fetch UserSig")
     const data = await res.json()
-    if (!data?.userSig || !data?.sdkAppId) {
+    const userSig = typeof data?.userSig === "string" ? data.userSig.trim() : ""
+    const sdkAppId = typeof data?.sdkAppId === "number"
+      ? data.sdkAppId
+      : Number.parseInt(String(data?.sdkAppId ?? ""), 10)
+    if (!userSig || !Number.isFinite(sdkAppId) || sdkAppId <= 0) {
       throw new Error("Invalid TRTC credentials")
     }
-    return data
+    return { userSig, sdkAppId }
   }
 
   const uiLocaleToLanguageCode = useCallback((): string => {
@@ -924,6 +1128,53 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     return left ? `${left} ${right}`.trim() : right
   }, [])
 
+  const appendFinalText = useCallback((base: string, addition: string) => {
+    const left = typeof base === "string" ? base.trim() : ""
+    const right = typeof addition === "string" ? addition.trim() : ""
+    if (!right) return left
+    if (!left) return right
+    if (left.endsWith(right)) return left
+    return `${left} ${right}`.trim()
+  }, [])
+
+  const normalizeFinalText = useCallback((value: string) => {
+    const raw = typeof value === "string" ? value.trim() : ""
+    const compact = raw.replace(/\s+/g, "")
+    return compact.replace(/[。！？!?]+$/g, "").toLowerCase()
+  }, [])
+
+  const normalizeDisplayText = useCallback((value: string) => {
+    const raw = typeof value === "string" ? value.trim() : ""
+    if (!raw) return ""
+    return raw.replace(/\s+/g, "").replace(/[。！？!?]+$/g, "").toLowerCase()
+  }, [])
+
+  const shouldAcceptFinalCaption = useCallback((key: string, text: string) => {
+    const normalized = normalizeFinalText(text)
+    if (!normalized) return false
+    const now = Date.now()
+    const previous = finalCaptionDedupRef.current.get(key)
+    if (previous && previous.text === normalized && now - previous.at < 6000) {
+      return false
+    }
+    finalCaptionDedupRef.current.set(key, { text: normalized, at: now })
+    return true
+  }, [normalizeFinalText])
+
+  const mergeLiveDisplay = useCallback((base: string, current: string) => {
+    const left = typeof base === "string" ? base.trim() : ""
+    const right = typeof current === "string" ? current.trim() : ""
+    if (!right) return left
+    if (!left) return right
+    const leftNorm = normalizeDisplayText(left)
+    const rightNorm = normalizeDisplayText(right)
+    if (!leftNorm) return right
+    if (rightNorm.startsWith(leftNorm)) return right
+    if (leftNorm.startsWith(rightNorm)) return left
+    if (leftNorm.endsWith(rightNorm)) return left
+    return appendText(left, right)
+  }, [appendText, normalizeDisplayText])
+
   const bindTrtcRealtimeTranscriberEvents = useCallback((trtc: any) => {
     if (aiTranscriberListenerRef.current) {
       trtc.off(TRTC.EVENT.REALTIME_TRANSCRIBER_MESSAGE, aiTranscriberListenerRef.current)
@@ -936,6 +1187,10 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     if (aiTranscriberCustomListenerRef.current) {
       trtc.off(TRTC.EVENT.CUSTOM_MESSAGE, aiTranscriberCustomListenerRef.current)
       aiTranscriberCustomListenerRef.current = null
+    }
+    if (trtcErrorListenerRef.current) {
+      trtc.off(TRTC.EVENT.ERROR, trtcErrorListenerRef.current)
+      trtcErrorListenerRef.current = null
     }
     const handleMessage = (event: any) => {
       if (!event) return
@@ -958,32 +1213,37 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       if (event.isCompleted) {
         // Final result: append to committed transcript
         const baseTranscript = sessionTranscriptRef.current
-        const mergedTranscript = appendText(baseTranscript, sourceText)
-        sessionTranscriptRef.current = mergedTranscript
-        setConfirmedTranscript(mergedTranscript)
-        setLiveTranscript(mergedTranscript)
+        if (shouldAcceptFinalCaption("local:source", sourceText)) {
+          const mergedTranscript = appendFinalText(baseTranscript, sourceText)
+          sessionTranscriptRef.current = mergedTranscript
+          setConfirmedTranscript(mergedTranscript)
+          setLiveTranscript(mergedTranscript)
+        }
 
         const baseTranslation = liveCommittedTranslationRef.current
-        const mergedTranslation = appendText(baseTranslation, translationText)
-        if (mergedTranslation) {
-          liveCommittedTranslationRef.current = mergedTranslation
-          aiTranscriberTranslationRef.current = mergedTranslation
-          setLiveTranslation(mergedTranslation)
-        } else if (aiTranscriberSourceLangRef.current && aiTranscriberSourceLangRef.current === aiTranscriberTargetLangRef.current) {
-          liveCommittedTranslationRef.current = mergedTranscript
-          aiTranscriberTranslationRef.current = mergedTranscript
-          setLiveTranslation(mergedTranscript)
+        if (shouldAcceptFinalCaption("local:translation", translationText)) {
+          const mergedTranslation = appendFinalText(baseTranslation, translationText)
+          if (mergedTranslation) {
+            liveCommittedTranslationRef.current = mergedTranslation
+            aiTranscriberTranslationRef.current = mergedTranslation
+            setLiveTranslation(mergedTranslation)
+          } else if (aiTranscriberSourceLangRef.current && aiTranscriberSourceLangRef.current === aiTranscriberTargetLangRef.current) {
+            const mergedTranscript = sessionTranscriptRef.current
+            liveCommittedTranslationRef.current = mergedTranscript
+            aiTranscriberTranslationRef.current = mergedTranscript
+            setLiveTranslation(mergedTranscript)
+          }
         }
         setIsInterim(false)
       } else {
         // Interim result: show current sentence without appending to committed
         // sourceText is the current recognition result for this sentence, not an increment
         const baseTranscript = sessionTranscriptRef.current
-        const displayTranscript = appendText(baseTranscript, sourceText)
+        const displayTranscript = mergeLiveDisplay(baseTranscript, sourceText)
         setLiveTranscript(displayTranscript)
 
         const baseTranslation = liveCommittedTranslationRef.current
-        const displayTranslation = appendText(baseTranslation, translationText)
+        const displayTranslation = mergeLiveDisplay(baseTranslation, translationText)
         if (displayTranslation) {
           aiTranscriberTranslationRef.current = displayTranslation
           setLiveTranslation(displayTranslation)
@@ -1053,14 +1313,16 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           const baseTranscript = sessionTranscriptRef.current
           if (end) {
             // Final result: append to committed transcript
-            const mergedTranscript = appendText(baseTranscript, text)
-            sessionTranscriptRef.current = mergedTranscript
-            setConfirmedTranscript(mergedTranscript)
-            setLiveTranscript(mergedTranscript)
-            setIsInterim(false)
+            if (shouldAcceptFinalCaption("local:source", text)) {
+              const mergedTranscript = appendFinalText(baseTranscript, text)
+              sessionTranscriptRef.current = mergedTranscript
+              setConfirmedTranscript(mergedTranscript)
+              setLiveTranscript(mergedTranscript)
+              setIsInterim(false)
+            }
           } else {
             // Interim result: show current sentence without appending
-            const displayTranscript = appendText(baseTranscript, text)
+            const displayTranscript = mergeLiveDisplay(baseTranscript, text)
             setLiveTranscript(displayTranscript)
             setIsInterim(true)
           }
@@ -1069,14 +1331,16 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           const baseTranslation = liveCommittedTranslationRef.current
           if (end) {
             // Final result: append to committed translation
-            const mergedTranslation = appendText(baseTranslation, translationText)
-            liveCommittedTranslationRef.current = mergedTranslation
-            aiTranscriberTranslationRef.current = mergedTranslation
-            setLiveTranslation(mergedTranslation)
-            setTrtcTranscriberTranslationActive(true)
+            if (shouldAcceptFinalCaption("local:translation", translationText)) {
+              const mergedTranslation = appendFinalText(baseTranslation, translationText)
+              liveCommittedTranslationRef.current = mergedTranslation
+              aiTranscriberTranslationRef.current = mergedTranslation
+              setLiveTranslation(mergedTranslation)
+              setTrtcTranscriberTranslationActive(true)
+            }
           } else {
             // Interim result: show current translation without appending
-            const displayTranslation = appendText(baseTranslation, translationText)
+            const displayTranslation = mergeLiveDisplay(baseTranslation, translationText)
             aiTranscriberTranslationRef.current = displayTranslation
             setLiveTranslation(displayTranslation)
             setTrtcTranscriberTranslationActive(true)
@@ -1088,13 +1352,15 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         const baseTranscript = remoteCommittedTranscriptRef.current
         if (end) {
           // Final result: append to committed transcript
-          const mergedTranscript = appendText(baseTranscript, text)
-          remoteCommittedTranscriptRef.current = mergedTranscript
-          setRemoteConfirmedTranscript(mergedTranscript)
-          setRemoteLiveTranscript(mergedTranscript)
+          if (shouldAcceptFinalCaption("remote:source", text)) {
+            const mergedTranscript = appendFinalText(baseTranscript, text)
+            remoteCommittedTranscriptRef.current = mergedTranscript
+            setRemoteConfirmedTranscript(mergedTranscript)
+            setRemoteLiveTranscript(mergedTranscript)
+          }
         } else {
           // Interim result: show current sentence without appending
-          const displayTranscript = appendText(baseTranscript, text)
+          const displayTranscript = mergeLiveDisplay(baseTranscript, text)
           setRemoteLiveTranscript(displayTranscript)
         }
       }
@@ -1102,12 +1368,14 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         const baseTranslation = remoteCommittedTranslationRef.current
         if (end) {
           // Final result: append to committed translation
-          const mergedTranslation = appendText(baseTranslation, translationText)
-          remoteCommittedTranslationRef.current = mergedTranslation
-          setRemoteLiveTranslation(mergedTranslation)
+          if (shouldAcceptFinalCaption("remote:translation", translationText)) {
+            const mergedTranslation = appendFinalText(baseTranslation, translationText)
+            remoteCommittedTranslationRef.current = mergedTranslation
+            setRemoteLiveTranslation(mergedTranslation)
+          }
         } else {
           // Interim result: show current translation without appending
-          const displayTranslation = appendText(baseTranslation, translationText)
+          const displayTranslation = mergeLiveDisplay(baseTranslation, translationText)
           setRemoteLiveTranslation(displayTranslation)
         }
       }
@@ -1117,10 +1385,28 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     }
     aiTranscriberCustomListenerRef.current = handleCustomMessage
     trtc.on(TRTC.EVENT.CUSTOM_MESSAGE, handleCustomMessage)
-  }, [appendText, primaryOf, targetLanguage.code, toast])
+  }, [appendFinalText, appendText, mergeLiveDisplay, primaryOf, shouldAcceptFinalCaption, targetLanguage.code, toast])
 
   const enterTRTCRoom = useCallback(async (roomIdStr: string, userId: string) => {
     try {
+      // 如果 TRTC 被全局禁用，直接使用 ASR 方案而不进入 TRTC 房间
+      if (trtcGloballyEnabled === false) {
+        console.log("[TRTC] Globally disabled, using ASR fallback")
+        // 获取本地音频流并使用 ASR
+        try {
+          await startCallFallbackAsr()
+          toast({
+            title: "通话已连接",
+            description: "使用标准语音识别模式（TRTC 已禁用）",
+            variant: "default"
+          })
+        } catch (e) {
+          console.error("Failed to get audio stream:", e)
+          throw new Error("无法获取麦克风权限")
+        }
+        return
+      }
+
       await cleanupTrtc()
 
       const trtcUserId = await getTrtcUserId(userId)
@@ -1137,6 +1423,32 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       trtcUserIdRef.current = trtcUserId
       trtcRoomIdRef.current = safeRoomId
       bindTrtcRealtimeTranscriberEvents(trtc)
+      if (trtcErrorListenerRef.current) {
+        trtc.off(TRTC.EVENT.ERROR, trtcErrorListenerRef.current)
+        trtcErrorListenerRef.current = null
+      }
+      const handleTrtcError = (event: any) => {
+        if (!event) return
+        const message = event.errorMessage || event.message || "TRTC 连接错误"
+        const normalized = String(message || "").toLowerCase()
+        const codeValue = typeof event.errorCode === "number"
+          ? event.errorCode
+          : Number.parseInt(String(event.errorCode ?? event.code ?? ""), 10)
+        const isAbort =
+          normalized.includes("api_call_aborted") ||
+          normalized.includes("unsubscribe aborted") ||
+          codeValue === 0x404d ||
+          codeValue === 16461
+        const isConnectionClosed = normalized.includes("connection closed") || normalized.includes("connection")
+        if ((trtcCleanupInProgressRef.current || !trtcRef.current) && isAbort) return
+        if (isAbort && isConnectionClosed) return
+        console.error("[TRTC] Error:", event)
+        toast({ title: "语音通话连接失败", description: message, variant: "destructive" })
+        void cleanupTrtc()
+        void startCallFallbackAsr()
+      }
+      trtcErrorListenerRef.current = handleTrtcError
+      trtc.on(TRTC.EVENT.ERROR, handleTrtcError)
 
       const { userSig, sdkAppId } = await fetchUserSig(trtcUserId)
 
@@ -1151,6 +1463,103 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           (trtc as any).startRemoteAudio({ userId: event.userId, streamType: event.streamType })
         }
       })
+      trtc.on(TRTC.EVENT.REMOTE_VIDEO_AVAILABLE, (event: any) => {
+        const userId = String(event?.userId ?? "")
+        if (!userId) return
+        const streamType = event?.streamType ?? TRTC.TYPE.STREAM_TYPE_MAIN
+        const available = typeof event?.isAvailable === "boolean"
+          ? event.isAvailable
+          : typeof event?.available === "boolean"
+            ? event.available
+            : typeof event?.isVideoAvailable === "boolean"
+              ? event.isVideoAvailable
+              : true
+        if (streamType === TRTC.TYPE.STREAM_TYPE_SUB) {
+          setRemoteScreenAvailable(available)
+          setRemoteScreenUserId(available ? userId : null)
+          setRemoteScreenStreamType(available ? streamType : null)
+          if (!available && typeof trtc.stopRemoteVideo === "function") {
+            void trtc.stopRemoteVideo({ userId, streamType })
+          }
+          return
+        }
+        setRemoteVideoAvailable(available)
+        setRemoteVideoUserId(available ? userId : null)
+        setRemoteVideoStreamType(available ? streamType : null)
+        if (!available && typeof trtc.stopRemoteVideo === "function") {
+          void trtc.stopRemoteVideo({ userId, streamType })
+        }
+      })
+      trtc.on(TRTC.EVENT.REMOTE_VIDEO_UNAVAILABLE, (event: any) => {
+        const userId = String(event?.userId ?? "")
+        if (!userId) return
+        const streamType = event?.streamType ?? TRTC.TYPE.STREAM_TYPE_MAIN
+        if (streamType === TRTC.TYPE.STREAM_TYPE_SUB) {
+          setRemoteScreenAvailable(false)
+          setRemoteScreenUserId(null)
+          setRemoteScreenStreamType(null)
+          if (typeof trtc.stopRemoteVideo === "function") {
+            void trtc.stopRemoteVideo({ userId, streamType })
+          }
+          return
+        }
+        setRemoteVideoAvailable(false)
+        setRemoteVideoUserId(null)
+        setRemoteVideoStreamType(null)
+        if (typeof trtc.stopRemoteVideo === "function") {
+          void trtc.stopRemoteVideo({ userId, streamType })
+        }
+      })
+      trtc.on(TRTC.EVENT.SCREEN_SHARE_STOPPED, () => {
+        setIsScreenSharing(false)
+      })
+      trtc.on(TRTC.EVENT.PUBLISH_STATE_CHANGED, (event: any) => {
+        const mediaType = event?.mediaType
+        const state = event?.state
+        if (mediaType === "screen" && state === "stopped") {
+          setIsScreenSharing(false)
+        }
+      })
+      trtc.on(TRTC.EVENT.TRACK, (event: any) => {
+        const userId = String(event?.userId ?? "")
+        const streamType = event?.streamType ?? TRTC.TYPE.STREAM_TYPE_MAIN
+        const track = event?.track
+        if (!userId || !track || track.kind !== "video") return
+        if (streamType === TRTC.TYPE.STREAM_TYPE_SUB) {
+          setRemoteScreenAvailable(true)
+          setRemoteScreenUserId(userId)
+          setRemoteScreenStreamType(streamType)
+          if (isMobile) {
+            setRemoteVideoAvailable(true)
+            setRemoteVideoUserId(userId)
+            setRemoteVideoStreamType(streamType)
+          }
+          return
+        }
+        setRemoteVideoAvailable(true)
+        setRemoteVideoUserId(userId)
+        setRemoteVideoStreamType(streamType)
+      })
+      trtc.on(TRTC.EVENT.VIDEO_PLAY_STATE_CHANGED, (event: any) => {
+        const userId = String(event?.userId ?? "")
+        const streamType = event?.streamType ?? TRTC.TYPE.STREAM_TYPE_MAIN
+        const state = event?.state
+        if (!userId || !streamType || state !== "stopped") return
+        if (streamType === TRTC.TYPE.STREAM_TYPE_SUB) {
+          setRemoteScreenAvailable(false)
+          setRemoteScreenUserId(null)
+          setRemoteScreenStreamType(null)
+          if (isMobile) {
+            setRemoteVideoAvailable(false)
+            setRemoteVideoUserId(null)
+            setRemoteVideoStreamType(null)
+          }
+          return
+        }
+        setRemoteVideoAvailable(false)
+        setRemoteVideoUserId(null)
+        setRemoteVideoStreamType(null)
+      })
 
       await trtc.enterRoom({
         roomId: safeRoomId,
@@ -1161,6 +1570,20 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       })
 
       await trtc.startLocalAudio()
+
+      // 设置最大通话时长限制：30分钟后自动断开
+      const MAX_CALL_DURATION_MS = 30 * 60 * 1000 // 30分钟
+      setTimeout(() => {
+        if (trtcRef.current === trtc) {
+          console.log("[TRTC] Maximum call duration reached (30min), disconnecting")
+          void cleanupTrtc()
+          toast({
+            title: "通话已结束",
+            description: "已达到最大通话时长限制（30分钟）",
+            variant: "default"
+          })
+        }
+      }, MAX_CALL_DURATION_MS)
 
       const audioTrack = trtc.getAudioTrack()
       let startedTranscriber = false
@@ -1188,10 +1611,13 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           OnSentenceEnd: (res: any) => {
             if (res?.result?.voice_text_str) {
               const text = res.result.voice_text_str
-              sessionTranscriptRef.current += text
-              setConfirmedTranscript(sessionTranscriptRef.current)
-              setLiveTranscript(sessionTranscriptRef.current)
-              setIsInterim(false)
+              if (shouldAcceptFinalCaption("local:source", text)) {
+                const merged = appendFinalText(sessionTranscriptRef.current, text)
+                sessionTranscriptRef.current = merged
+                setConfirmedTranscript(merged)
+                setLiveTranscript(merged)
+                setIsInterim(false)
+              }
             }
           },
           OnError: (err: any) => console.error("ASR Error", err)
@@ -1206,7 +1632,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       toast({ title: "语音通话连接失败", description: e.message || String(e), variant: "destructive" })
       resetCallState()
     }
-  }, [bindTrtcRealtimeTranscriberEvents, callLiveEnabled, cleanupTrtc, resetCallState, sourceLanguage.code, startTrtcRealtimeTranscriber, targetLanguage.code, toast, uiLocaleToLanguageCode])
+  }, [appendFinalText, bindTrtcRealtimeTranscriberEvents, callLiveEnabled, cleanupTrtc, isMobile, mergeLiveDisplay, resetCallState, shouldAcceptFinalCaption, sourceLanguage.code, startCallFallbackAsr, startTrtcRealtimeTranscriber, targetLanguage.code, toast, uiLocaleToLanguageCode, trtcGloballyEnabled])
 
   const startOutgoingCall = useCallback(
     async (target: { id: string; name: string }) => {
@@ -1303,6 +1729,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const handleToggleCallLive = useCallback(() => {
     setCallLiveEnabled((prev) => {
       const next = !prev
+
       if (!next) {
         setLiveTranscript("")
         setConfirmedTranscript("")
@@ -1332,6 +1759,11 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           } as CallSignalPayload).catch(() => { })
         }
         void stopTrtcRealtimeTranscriber()
+        if (trtcGloballyEnabled === false) {
+          stopCallFallbackAsr()
+        }
+      } else if (callStatusRef.current === "active" && trtcGloballyEnabled === false) {
+        void startCallFallbackAsr()
       } else if (callStatusRef.current === "active" && trtcUserIdRef.current && trtcRoomIdRef.current) {
         const sourceCode = sourceLanguage.code === "auto" ? uiLocaleToLanguageCode() : sourceLanguage.code
         void startTrtcRealtimeTranscriber({
@@ -1343,7 +1775,90 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       }
       return next
     })
-  }, [roomUserId, sendSignal, sourceLanguage.code, startTrtcRealtimeTranscriber, stopTrtcRealtimeTranscriber, t, targetLanguage.code, uiLocaleToLanguageCode, userName])
+  }, [roomUserId, sendSignal, sourceLanguage.code, startCallFallbackAsr, startTrtcRealtimeTranscriber, stopCallFallbackAsr, stopTrtcRealtimeTranscriber, t, targetLanguage.code, trtcGloballyEnabled, uiLocaleToLanguageCode, userName])
+
+  const handleToggleLocalVideo = useCallback(async () => {
+    if (callStatusRef.current !== "active") return
+    if (trtcGloballyEnabled === false) return
+    const trtc = trtcRef.current
+    if (!trtc) return
+    if (isVideoEnabled) {
+      await safeStopLocalVideo(trtc)
+      setIsVideoEnabled(false)
+      return
+    }
+    if (!localVideoRef.current) return
+    try {
+      await trtc.startLocalVideo({ view: localVideoRef.current })
+      setIsVideoEnabled(true)
+    } catch (err) {
+      setIsVideoEnabled(false)
+      const message = err instanceof Error ? err.message : String(err ?? "")
+      toast({ title: t("call.videoFailed"), description: message, variant: "destructive" })
+    }
+  }, [isVideoEnabled, safeStopLocalVideo, t, toast, trtcGloballyEnabled])
+
+  const handleToggleScreenShare = useCallback(async () => {
+    if (callStatusRef.current !== "active") return
+    if (trtcGloballyEnabled === false) return
+    const trtc = trtcRef.current
+    if (!trtc) return
+    if (isScreenSharing) {
+      await safeStopScreenShare(trtc)
+      setIsScreenSharing(false)
+      return
+    }
+    const startFn = trtc.startScreenShare || trtc.startScreenCapture || trtc.startLocalScreen
+    if (typeof startFn !== "function") {
+      toast({ title: t("call.screenShareFailed"), description: t("call.screenShareUnsupported"), variant: "destructive" })
+      return
+    }
+    const screenView = isMobile ? localVideoRef.current : localScreenRef.current
+    try {
+      await startFn.call(trtc, { view: screenView ?? null })
+      setIsScreenSharing(true)
+    } catch (err) {
+      setIsScreenSharing(false)
+      const message = err instanceof Error ? err.message : String(err ?? "")
+      toast({ title: t("call.screenShareFailed"), description: message, variant: "destructive" })
+    }
+  }, [isMobile, isScreenSharing, safeStopScreenShare, t, toast, trtcGloballyEnabled])
+
+  useEffect(() => {
+    const trtc = trtcRef.current
+    if (!trtc || typeof trtc.startRemoteVideo !== "function") return
+    if (isMobile && remoteScreenAvailable) {
+      remoteVideoStartedRef.current = null
+      if (remoteVideoUserId && typeof trtc.stopRemoteVideo === "function") {
+        void trtc.stopRemoteVideo({ userId: remoteVideoUserId, streamType: TRTC.TYPE.STREAM_TYPE_MAIN })
+      }
+      return
+    }
+    if (!remoteVideoAvailable || !remoteVideoUserId || !remoteVideoRef.current) {
+      remoteVideoStartedRef.current = null
+      return
+    }
+    const streamType = remoteVideoStreamType ?? TRTC.TYPE.STREAM_TYPE_MAIN
+    const key = `${remoteVideoUserId}:${String(streamType)}`
+    if (remoteVideoStartedRef.current === key) return
+    remoteVideoStartedRef.current = key
+    void trtc.startRemoteVideo({ userId: remoteVideoUserId, streamType, view: remoteVideoRef.current })
+  }, [isMobile, remoteScreenAvailable, remoteVideoAvailable, remoteVideoStreamType, remoteVideoUserId])
+
+  useEffect(() => {
+    const trtc = trtcRef.current
+    if (!trtc || typeof trtc.startRemoteVideo !== "function") return
+    const screenView = isMobile ? remoteVideoRef.current : remoteScreenRef.current
+    if (!remoteScreenAvailable || !remoteScreenUserId || !screenView) {
+      remoteScreenStartedRef.current = null
+      return
+    }
+    const streamType = remoteScreenStreamType ?? TRTC.TYPE.STREAM_TYPE_SUB
+    const key = `${remoteScreenUserId}:${String(streamType)}`
+    if (remoteScreenStartedRef.current === key) return
+    remoteScreenStartedRef.current = key
+    void trtc.startRemoteVideo({ userId: remoteScreenUserId, streamType, view: screenView })
+  }, [isMobile, remoteScreenAvailable, remoteScreenStreamType, remoteScreenUserId])
 
   const resolveLanguageCode = useCallback((value: string): string => {
     const byCode = SUPPORTED_LANGUAGES.find((l) => l.code === value)
@@ -1417,10 +1932,21 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     const trtc = trtcRef.current
     if (trtc) {
       try {
-        if (isCallMuted) {
-          trtc.muteLocalAudio()
-        } else {
-          trtc.unmuteLocalAudio()
+        const muteFn = typeof trtc.muteLocalAudio === "function" ? trtc.muteLocalAudio.bind(trtc) : null
+        const unmuteFn = typeof trtc.unmuteLocalAudio === "function" ? trtc.unmuteLocalAudio.bind(trtc) : null
+        if (muteFn && unmuteFn) {
+          if (isCallMuted) {
+            muteFn()
+          } else {
+            unmuteFn()
+          }
+        } else if (typeof trtc.updateLocalAudio === "function") {
+          trtc.updateLocalAudio({ mute: isCallMuted })
+        } else if (typeof trtc.getAudioTrack === "function") {
+          const track = trtc.getAudioTrack()
+          if (track) {
+            track.enabled = !isCallMuted
+          }
         }
       } catch (e) {
         console.error("[v0] Failed to mute/unmute TRTC audio:", e)
@@ -1975,7 +2501,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     try {
       const text = "语音测试"
       const proxyUrl = `/api/tts?text=${encodeURIComponent(text)}&lang=${targetLanguage.code}`
-      
+
       // Stop previous test audio if playing
       if (testAudioRef.current) {
         testAudioRef.current.pause()
@@ -1985,7 +2511,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       const audio = new Audio(proxyUrl)
       testAudioRef.current = audio
       audio.volume = 1.0
-      
+
       let hasPlayed = false
       audio.onplay = () => { hasPlayed = true }
       audio.onerror = (e) => {
@@ -1994,15 +2520,15 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         playBeep().then(res => {
           if (!res.ok) {
             toast({
-               title: "音频系统故障",
-               description: "无法播放网络语音，且无法启动蜂鸣器，请检查系统音频。",
-               variant: "destructive"
+              title: "音频系统故障",
+              description: "无法播放网络语音，且无法启动蜂鸣器，请检查系统音频。",
+              variant: "destructive"
             })
           } else {
-             toast({
-               title: "网络语音失败",
-               description: "已播放蜂鸣提示音。可能是服务端代理无法连接语音服务器。",
-               variant: "destructive"
+            toast({
+              title: "网络语音失败",
+              description: "已播放蜂鸣提示音。可能是服务端代理无法连接语音服务器。",
+              variant: "destructive"
             })
           }
         })
@@ -2014,10 +2540,10 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           console.error("Direct Audio play failed:", error)
           // If play blocked or failed
           playBeep().then(() => {
-             toast({
-               title: "语音播放被拦截",
-               description: `错误: ${error.message || "未知错误"}。已尝试蜂鸣。`,
-               variant: "destructive"
+            toast({
+              title: "语音播放被拦截",
+              description: `错误: ${error.message || "未知错误"}。已尝试蜂鸣。`,
+              variant: "destructive"
             })
           })
         })
@@ -2268,14 +2794,61 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       }
     }
 
-    window.addEventListener("pagehide", sendLeave)
-    window.addEventListener("beforeunload", sendLeave)
+    // 页面关闭时清理 TRTC 连接，防止语音时长泄漏
+    const handleBeforeUnload = () => {
+      sendLeave()
+      // 同步清理 TRTC，防止页面关闭后连接仍然保持
+      const trtc = trtcRef.current
+      if (trtc) {
+        void safeStopScreenShare(trtc)
+        void safeStopLocalVideo(trtc)
+        void safeStopLocalAudio(trtc)
+        void safeExitTrtcRoom(trtc)
+        void safeDestroyTrtc(trtc)
+        trtcRef.current = null
+      }
+    }
+
+    window.addEventListener("pagehide", handleBeforeUnload)
+    window.addEventListener("beforeunload", handleBeforeUnload)
+
+    // 处理页面可见性变化：后台运行超过30秒自动断开TRTC
+    let hiddenTimer: NodeJS.Timeout | null = null
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        // 页面切换到后台，启动计时器
+        hiddenTimer = setTimeout(() => {
+          // 30秒后如果还在后台，断开TRTC连接
+          const trtc = trtcRef.current
+          if (trtc) {
+            console.log("[TRTC] Page hidden for 30s, disconnecting to save resources")
+            void safeStopScreenShare(trtc)
+            void safeStopLocalVideo(trtc)
+            void safeStopLocalAudio(trtc)
+            void safeExitTrtcRoom(trtc)
+            void safeDestroyTrtc(trtc)
+            trtcRef.current = null
+          }
+        }, 30000) // 30秒
+      } else {
+        // 页面回到前台，清除计时器
+        if (hiddenTimer) {
+          clearTimeout(hiddenTimer)
+          hiddenTimer = null
+        }
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange)
 
     return () => {
-      window.removeEventListener("pagehide", sendLeave)
-      window.removeEventListener("beforeunload", sendLeave)
+      window.removeEventListener("pagehide", handleBeforeUnload)
+      window.removeEventListener("beforeunload", handleBeforeUnload)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+      if (hiddenTimer) {
+        clearTimeout(hiddenTimer)
+      }
     }
-  }, [isInRoom, roomId, roomUserId])
+  }, [isInRoom, roomId, roomUserId, safeDestroyTrtc, safeExitTrtcRoom, safeStopLocalAudio, safeStopLocalVideo, safeStopScreenShare])
 
   useEffect(() => {
     if (!isInRoom || !roomId || !roomUserId) return
@@ -2334,6 +2907,12 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           exitRoom(t("toast.roomUnavailableTitle"), t("toast.roomUnavailableDesc"))
           return
         }
+        if (response.status === 429) {
+          nextDelayMs = 5000 // Too Many Requests, slow down
+          console.warn("[Poll] 429 Too Many Requests, slowing down poll interval to 5s")
+          return
+        }
+
         if (!response.ok) {
           throw new Error(`Poll failed with status ${response.status}`)
         }
@@ -2756,6 +3335,22 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     void handleLeaveRoom()
   }, [handleLeaveRoom, isInRoom, joinedAuthUserId, user?.id])
 
+  // 组件卸载时清理 TRTC 连接，防止内存泄漏和资源浪费
+  useEffect(() => {
+    return () => {
+      // 组件卸载时同步清理 TRTC
+      const trtc = trtcRef.current
+      if (trtc) {
+        void safeStopScreenShare(trtc)
+        void safeStopLocalVideo(trtc)
+        void safeStopLocalAudio(trtc)
+        void safeExitTrtcRoom(trtc)
+        void safeDestroyTrtc(trtc)
+        trtcRef.current = null
+      }
+    }
+  }, [safeDestroyTrtc, safeExitTrtcRoom, safeStopLocalAudio, safeStopLocalVideo, safeStopScreenShare])
+
   const handleCopyRoomId = async () => {
     try {
       await navigator.clipboard.writeText(roomId)
@@ -2879,27 +3474,57 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     [exitRoom, roomId, roomUserId, sourceLanguage.code, t, toast, targetLanguage.code, userName],
   )
 
+  useEffect(() => {
+    if (!isMobile) return
+    const isRemoteSub = remoteVideoStreamType === TRTC.TYPE.STREAM_TYPE_SUB
+    if (!remoteScreenAvailable && (isRemoteSub || !remoteVideoAvailable)) {
+      setRemoteVideoAvailable(false)
+      setRemoteVideoUserId(null)
+      setRemoteVideoStreamType(null)
+    }
+  }, [isMobile, remoteScreenAvailable, remoteVideoAvailable, remoteVideoStreamType])
+
   if (!isInRoom) {
     return <RoomJoin onJoin={handleJoinRoom} initialRoomId={urlRoomId} autoJoin={autoJoin || Boolean(urlRoomId)} />
   }
 
-  return (
-    <div className="flex flex-col h-screen">
-      <audio ref={remoteAudioRef} className="hidden" />
-      <Header
-        onClearChat={handleClearChat}
-        messageCount={messages.length}
-        onSettingsChange={setSettings}
-        roomId={isInRoom ? roomId : undefined}
-        roomUserId={roomUserId}
-        onProfileSaved={handleProfileSaved}
-        userCount={users.length}
-        onShowUsers={() => setIsUsersSheetOpen(true)}
-      />
+  const showLocalVideo = isVideoEnabled || (isMobile && isScreenSharing)
+  const showRemoteVideo = isMobile
+    ? remoteScreenAvailable || (remoteVideoAvailable && (remoteVideoStreamType ?? TRTC.TYPE.STREAM_TYPE_MAIN) === TRTC.TYPE.STREAM_TYPE_MAIN)
+    : remoteVideoAvailable
+  const showVideoSection = showLocalVideo || showRemoteVideo
+  const showLocalScreen = !isMobile && isScreenSharing
+  const showRemoteScreen = !isMobile && remoteScreenAvailable
+  const showScreenSection = showLocalScreen || showRemoteScreen
 
-      <div className="flex-1 flex max-w-screen-2xl w-full mx-auto p-2 lg:p-4 gap-2 lg:gap-4 overflow-hidden min-h-0">
-        <div className="hidden lg:flex w-64 flex-shrink-0 flex-col gap-4">
-          <div className="min-h-0 flex-1">
+  // Determine if the Stage (Video/Screen area) should be visible
+  // We show it if there is an active call AND (video is on OR screen share is on OR remote has video/screen)
+  // Or if we are just in a "Call" state (audio only), we might want to show avatars?
+  // For now, let's show it if we have an active peer connection, to allow access to controls.
+  const isStageVisible = (callStatus === "active" && callPeer) || isScreenSharing || showVideoSection || showScreenSection
+
+  return (
+    <div className="flex flex-col h-screen bg-background overflow-hidden">
+      <audio ref={remoteAudioRef} className="hidden" />
+      
+      {/* 1. Global Header */}
+      <div className="shrink-0 z-50 bg-card border-b shadow-sm">
+        <Header
+          onClearChat={handleClearChat}
+          messageCount={messages.length}
+          onSettingsChange={setSettings}
+          roomId={isInRoom ? roomId : undefined}
+          roomUserId={roomUserId}
+          onProfileSaved={handleProfileSaved}
+          userCount={users.length}
+          onShowUsers={() => setIsUsersSheetOpen(true)}
+        />
+      </div>
+
+      <div className="flex-1 flex min-h-0 relative">
+        {/* 2. Desktop Sidebar (User List) */}
+        <div className="hidden lg:flex w-64 border-r border-border bg-muted/10 flex-col shrink-0">
+          <div className="flex-1 overflow-y-auto p-4">
             <UserList
               users={users}
               currentUserId={roomUserId}
@@ -2913,29 +3538,360 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
               }}
             />
           </div>
-          <AdSlot slotKey="room_sidebar" variant="sidebar" limit={2} fetchLimit={6} rotateMs={7000} />
+          <div className="p-4 border-t border-border">
+            <AdSlot slotKey="room_sidebar" variant="sidebar" limit={2} fetchLimit={6} rotateMs={7000} />
+          </div>
         </div>
 
-        <div className="flex-1 flex flex-col gap-2 lg:gap-3 min-w-0 min-h-0">
-          <div className="lg:hidden">
-            <AdSlot slotKey="room_inline" variant="inline" limit={1} />
-          </div>
+        {/* 3. Main Content Area */}
+        <div className="flex-1 flex flex-col min-w-0 bg-background relative">
+          
+          {/* Split View Container */}
+          <div className="flex flex-col lg:flex-row flex-1 min-h-0">
+            
+            {/* 3a. Video/Screen Stage */}
+            {/* Always rendered to keep refs alive, but hidden via CSS when inactive */}
+            <div className={`
+              relative flex flex-col bg-zinc-950 transition-all duration-300 ease-in-out
+              ${isStageVisible 
+                ? 'lg:flex-[2] basis-[40vh] shrink-0 lg:basis-auto border-b lg:border-b-0 lg:border-r border-border' 
+                : 'hidden'}
+            `}>
+              {/* Stage Content */}
+              <div className="flex-1 p-2 md:p-4 flex items-center justify-center overflow-hidden">
+                <div className={`
+                  grid gap-2 w-full max-w-5xl max-h-full transition-all
+                  ${(showScreenSection || (showLocalVideo && showRemoteVideo)) ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'}
+                `}>
+                  
+                  {/* Local Screen */}
+                  <div className={`relative rounded-xl overflow-hidden bg-muted/10 border border-white/10 aspect-video ${showLocalScreen ? '' : 'hidden'}`}>
+                    <div className="absolute top-2 left-2 z-10 px-2 py-0.5 rounded-md bg-black/60 text-white text-[10px] font-medium backdrop-blur-sm">
+                      {t("call.localScreen")}
+                    </div>
+                    <div ref={localScreenRef} className="w-full h-full bg-black/20" />
+                  </div>
+                  
+                  {/* Remote Screen */}
+                  <div className={`relative rounded-xl overflow-hidden bg-muted/10 border border-white/10 aspect-video ${showRemoteScreen ? '' : 'hidden'}`}>
+                    <div className="absolute top-2 left-2 z-10 px-2 py-0.5 rounded-md bg-black/60 text-white text-[10px] font-medium backdrop-blur-sm">
+                      {t("call.remoteScreen")}
+                    </div>
+                    <div className="relative w-full h-full">
+                      <div ref={remoteScreenRef} className="w-full h-full bg-black/20" />
+                      {!remoteScreenAvailable && (
+                        <div className="absolute inset-0 flex items-center justify-center text-xs text-zinc-400">
+                          {t("call.noRemoteScreen")}
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
-          <div className="flex-1 min-h-0 bg-card rounded-lg lg:rounded-xl border border-border overflow-hidden flex flex-col">
-            <div className="shrink-0 px-2 lg:px-3 py-2 border-b border-border flex items-center gap-2">
-              <div className="lg:hidden">
-                <Sheet open={isUsersSheetOpen} onOpenChange={setIsUsersSheetOpen}>
-                  <SheetTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0">
-                      <Users className="w-4 h-4" />
+                  {/* Local Video */}
+                  <div className={`relative rounded-xl overflow-hidden bg-muted/10 border border-white/10 aspect-video ${showLocalVideo ? '' : 'hidden'}`}>
+                    <div className="absolute top-2 left-2 z-10 px-2 py-0.5 rounded-md bg-black/60 text-white text-[10px] font-medium backdrop-blur-sm">
+                      {isMobile && isScreenSharing ? t("call.localScreen") : t("call.localVideo")}
+                    </div>
+                    <div ref={localVideoRef} className="w-full h-full bg-black/20" />
+                  </div>
+
+                  {/* Remote Video */}
+                  <div className={`relative rounded-xl overflow-hidden bg-muted/10 border border-white/10 aspect-video ${showRemoteVideo ? '' : 'hidden'}`}>
+                    <div className="absolute top-2 left-2 z-10 px-2 py-0.5 rounded-md bg-black/60 text-white text-[10px] font-medium backdrop-blur-sm">
+                      {isMobile && remoteScreenAvailable ? t("call.remoteScreen") : t("call.remoteVideo")}
+                    </div>
+                    <div className="relative w-full h-full">
+                      <div ref={remoteVideoRef} className="w-full h-full bg-black/20" />
+                      {!remoteVideoAvailable && !(isMobile && remoteScreenAvailable) && (
+                        <div className="absolute inset-0 flex items-center justify-center text-xs text-zinc-400">
+                          {t("call.noRemoteVideo")}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Audio Only Placeholder */}
+                  {!showVideoSection && !showScreenSection && callPeer && (
+                    <div className="col-span-full flex flex-col items-center justify-center gap-4 text-zinc-400">
+                      <Avatar className="h-20 w-20 border-4 border-white/10">
+                        <AvatarImage src={callPeerUser?.avatar || ""} />
+                        <AvatarFallback className="text-2xl">{callPeer.name?.slice(0, 1) || "?"}</AvatarFallback>
+                      </Avatar>
+                      <div className="text-center">
+                        <div className="font-semibold text-white">{callPeer.name}</div>
+                        <div className="text-xs opacity-70">{t("call.acceptedDesc", { name: callPeer.name })}</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Stage Controls (Floating) */}
+              <div className="p-4 flex items-center justify-center gap-3 bg-gradient-to-t from-black/90 to-transparent">
+                <div className="absolute top-4 right-4 px-2 py-1 rounded-md bg-black/40 text-xs text-white/70 font-mono backdrop-blur-sm border border-white/10">
+                  {formatCallDuration(callDurationSec)}
+                </div>
+
+                <Button
+                  variant={isCallMuted ? "destructive" : "secondary"}
+                  size="icon"
+                  className="h-10 w-10 rounded-full shadow-lg border border-white/5"
+                  onClick={() => setIsCallMuted((prev) => !prev)}
+                >
+                  {isCallMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </Button>
+                <Button
+                  variant={isVideoEnabled ? "secondary" : "outline"}
+                  size="icon"
+                  className="h-10 w-10 rounded-full shadow-lg bg-white/10 border-white/10 text-white hover:bg-white/20"
+                  onClick={handleToggleLocalVideo}
+                >
+                  {isVideoEnabled ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
+                </Button>
+                <Button
+                  variant={isScreenSharing ? "secondary" : "outline"}
+                  size="icon"
+                  className="h-10 w-10 rounded-full shadow-lg bg-white/10 border-white/10 text-white hover:bg-white/20"
+                  onClick={handleToggleScreenShare}
+                >
+                  {isScreenSharing ? <ScreenShareOff className="w-4 h-4" /> : <ScreenShare className="w-4 h-4" />}
+                </Button>
+                <Button
+                  variant={callLiveEnabled ? "secondary" : "outline"}
+                  size="sm"
+                  className="h-10 rounded-full shadow-lg bg-white/10 border-white/10 text-white hover:bg-white/20 px-4"
+                  onClick={handleToggleCallLive}
+                >
+                  {t("voice.liveTranslationTitle")}
+                </Button>
+                <Button 
+                  variant="destructive" 
+                  size="icon" 
+                  className="h-10 w-10 rounded-full shadow-lg"
+                  onClick={handleEndCall}
+                >
+                  <PhoneOff className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+
+            {/* 3b. Chat & Transcript Area */}
+            <div className="flex-1 flex flex-col min-w-0 bg-muted/5 relative">
+              {/* Mobile Top Bar */}
+              <div className="lg:hidden shrink-0 px-3 py-2 flex items-center justify-between border-b bg-background/80 backdrop-blur z-10">
+                <div className="flex items-center gap-2 max-w-[60%]">
+                  <div className="flex flex-col">
+                    <div className="text-xs font-medium truncate">ID: {roomId}</div>
+                    <div className="text-[10px] text-muted-foreground">{users.length} {t("users.title", { count: users.length })}</div>
+                  </div>
+                  <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={handleCopyRoomId}>
+                    <Copy className="w-3 h-3" />
+                  </Button>
+                </div>
+                <div className="flex items-center gap-1">
+                  {!isStageVisible && (
+                    <Button variant="secondary" size="sm" className="h-7 text-xs" onClick={() => setIsUsersSheetOpen(true)}>
+                      <Phone className="w-3 h-3 mr-1.5" />
+                      通话
                     </Button>
-                  </SheetTrigger>
-                  <SheetContent side="left" className="w-[85%] sm:w-[380px] p-0">
-                    <SheetHeader className="sr-only">
-                      <SheetTitle>{t("users.title", { count: users.length })}</SheetTitle>
-                      <SheetDescription>显示当前房间内的在线用户列表</SheetDescription>
-                    </SheetHeader>
-                    <div className="pt-10 h-full">
+                  )}
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setIsUsersSheetOpen(true)}>
+                    <Users className="w-4 h-4" />
+                  </Button>
+                  {isAdmin && (
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={openRoomSettings}>
+                      <Settings className="w-4 h-4" />
+                    </Button>
+                  )}
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleLeaveRoom}>
+                    <LogOut className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Chat Content */}
+              <div className="flex-1 min-h-0 relative">
+                <ChatArea
+                  variant="embedded"
+                  messages={messages}
+                  speechRate={settings.speechRate}
+                  speechVolume={settings.speechVolume}
+                  autoPlay={settings.autoPlayTranslations && callStatus !== "active"}
+                />
+
+                {/* Live Translation Overlay (Floating) */}
+                {(isRecording || isProcessing || callStatus === "active") && (
+                  (formattedLiveTranslation.trim() || remoteLiveTranslation.trim() || (callStatus === "active" && callLiveEnabled && formattedLiveTranscript.trim()) || (callStatus === "active" && remoteLiveTranscript.trim()) || !liveSpeechSupported)
+                ) && (
+                  <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background via-background/95 to-transparent z-10 pointer-events-none">
+                    <div className="w-full max-w-3xl mx-auto bg-card/95 border shadow-lg rounded-xl p-4 pointer-events-auto backdrop-blur animate-in fade-in slide-in-from-bottom-2">
+                       {/* Content copied from original logic */}
+                       {!liveSpeechSupported ? (
+                          <div className="text-xs text-muted-foreground">{t("voice.liveUnsupported")}</div>
+                        ) : null}
+                        {(callStatus === "active" && callLiveEnabled && liveTranscript.trim()) ? (
+                          <div className="mb-4">
+                            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                              {userName || "我"}
+                            </div>
+                            <div className="text-base leading-relaxed whitespace-pre-wrap break-all">
+                              <span className="text-foreground font-bold">{confirmedTranscript}</span>
+                              <span className={isInterim ? "text-muted-foreground text-sm" : "text-foreground font-bold"}>
+                                {liveTranscript.slice(confirmedTranscript.length)}
+                              </span>
+                            </div>
+                          </div>
+                        ) : null}
+                        {remoteLiveTranslation.trim() ? (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="order-2 md:order-1">
+                              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                                {remoteLiveUserName ? `${remoteLiveUserName} · ${t("voice.liveTranslationTitle")}` : t("voice.liveTranslationTitle")}
+                              </div>
+                              <div className="text-base font-medium leading-relaxed text-primary whitespace-pre-wrap">{remoteLiveTranslation}</div>
+                            </div>
+                            {remoteLiveTranscript.trim() && (
+                              <div className="order-1 md:order-2 opacity-60">
+                                <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                                  {t("voice.originalTranscript")}
+                                </div>
+                                <div className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                                  <span className="text-foreground font-medium">{remoteConfirmedTranscript}</span>
+                                  <span className="opacity-70">{remoteLiveTranscript.slice(remoteConfirmedTranscript.length)}</span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ) : callStatus === "active" && remoteLiveTranscript.trim() ? (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="order-2 md:order-1">
+                               <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                                {remoteLiveUserName ? `${remoteLiveUserName} · ${t("voice.liveTranslationTitle")}` : t("voice.liveTranslationTitle")}
+                              </div>
+                              <div className="text-sm text-muted-foreground animate-pulse">正在翻译…</div>
+                            </div>
+                            <div className="order-1 md:order-2 opacity-60">
+                              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                                {t("voice.originalTranscript")}
+                              </div>
+                              <div className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                                <span className="text-foreground font-medium">{remoteConfirmedTranscript}</span>
+                                <span className="opacity-70">{remoteLiveTranscript.slice(remoteConfirmedTranscript.length)}</span>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Bottom Controls (Unified) */}
+              <div className="shrink-0 p-3 bg-background border-t z-20">
+                 {/* Desktop Layout */}
+                 <div className="hidden lg:flex items-center justify-center gap-6">
+                    <div className="w-[200px] flex justify-end">
+                       <Select value={sourceLanguage.code} onValueChange={(code) => {
+                          const next = sourceLanguageOptions.find(i => i.code === code); if(next) setSourceLanguage(next);
+                       }}>
+                          <SelectTrigger className="h-10 bg-muted/50"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                             {sourceLanguageOptions.map(l => <SelectItem key={l.code} value={l.code}>{l.flag} {l.name}</SelectItem>)}
+                          </SelectContent>
+                       </Select>
+                    </div>
+                    
+                    <VoiceControls
+                      variant="inline"
+                      showHint={true}
+                      isProcessing={isProcessing}
+                      onRecordingComplete={handleRecordingComplete}
+                      onRecordingChange={setIsRecording}
+                    />
+
+                    <div className="w-[200px] flex justify-start">
+                       <Select value={targetLanguage.code} onValueChange={(code) => {
+                          const next = SUPPORTED_LANGUAGES.find(i => i.code === code); if(next) setTargetLanguage(next);
+                       }}>
+                          <SelectTrigger className="h-10 bg-muted/50"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                             {SUPPORTED_LANGUAGES.map(l => <SelectItem key={l.code} value={l.code}>{l.flag} {l.name}</SelectItem>)}
+                          </SelectContent>
+                       </Select>
+                    </div>
+                 </div>
+
+                 {/* Mobile Layout */}
+                 <div className="flex lg:hidden items-end gap-2">
+                    <div className="flex-1 min-w-0">
+                       <Label className="text-[10px] text-muted-foreground mb-1 block text-center">{t("language.source")}</Label>
+                       <Select value={sourceLanguage.code} onValueChange={(code) => {
+                          const next = sourceLanguageOptions.find(i => i.code === code); if(next) setSourceLanguage(next);
+                       }}>
+                          <SelectTrigger className="h-9 px-2 text-xs bg-muted/50"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                             {sourceLanguageOptions.map(l => <SelectItem key={l.code} value={l.code}>{l.flag} {l.name}</SelectItem>)}
+                          </SelectContent>
+                       </Select>
+                    </div>
+
+                    <div className="shrink-0 flex flex-col items-center">
+                        <VoiceControls
+                          variant="stacked"
+                          showHint={false}
+                          isProcessing={isProcessing}
+                          onRecordingComplete={handleRecordingComplete}
+                          onRecordingChange={setIsRecording}
+                        />
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                       <Label className="text-[10px] text-muted-foreground mb-1 block text-center">{t("language.target")}</Label>
+                       <Select value={targetLanguage.code} onValueChange={(code) => {
+                          const next = SUPPORTED_LANGUAGES.find(i => i.code === code); if(next) setTargetLanguage(next);
+                       }}>
+                          <SelectTrigger className="h-9 px-2 text-xs bg-muted/50"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                             {SUPPORTED_LANGUAGES.map(l => <SelectItem key={l.code} value={l.code}>{l.flag} {l.name}</SelectItem>)}
+                          </SelectContent>
+                       </Select>
+                    </div>
+                 </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        {/* Dialogs */}
+        <Dialog open={roomSettingsOpen} onOpenChange={setRoomSettingsOpen}>
+            <DialogContent>
+                <DialogHeader><DialogTitle>{t("roomSettings.title")}</DialogTitle></DialogHeader>
+                {/* ... settings content ... */}
+                <div className="space-y-4 py-4">
+                    <RadioGroup value={roomSettingsJoinMode} onValueChange={v => setRoomSettingsJoinMode(v as any)}>
+                        <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="public" id="public" />
+                            <Label htmlFor="public">{t("roomSettings.joinModePublic")}</Label>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="password" id="password" />
+                            <Label htmlFor="password">{t("roomSettings.joinModePassword")}</Label>
+                        </div>
+                    </RadioGroup>
+                    {roomSettingsJoinMode === "password" && (
+                        <Input value={roomSettingsPassword} onChange={e => setRoomSettingsPassword(e.target.value)} placeholder="Password" />
+                    )}
+                </div>
+                <DialogFooter>
+                    <Button onClick={saveRoomSettings} disabled={roomSettingsSaving}>Save</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+
+        <Sheet open={isUsersSheetOpen} onOpenChange={setIsUsersSheetOpen}>
+             <SheetContent side="left" className="w-[85%] sm:w-[380px] p-0">
+                 <div className="pt-10 h-full">
                       <UserList
                         users={users}
                         currentUserId={roomUserId}
@@ -2948,502 +3904,30 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
                           if (target) void startOutgoingCall({ id: target.id, name: target.name })
                         }}
                       />
-                    </div>
-                  </SheetContent>
-                </Sheet>
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setIsUsersSheetOpen(true)}
-                className="h-9 md:hidden"
-              >
-                <Phone className="w-4 h-4 mr-2" />
-                语音通话
-              </Button>
-              <div className="min-w-0 flex-1">
-                <div className="text-xs text-muted-foreground hidden sm:block">{t("common.roomId")}</div>
-                <div className="font-mono text-sm font-medium truncate flex items-center gap-2">
-                  <span className="sm:hidden text-xs text-muted-foreground">ID:</span>
-                  {roomId}
-                </div>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={handleCopyRoomId}
-                className="h-9 w-9 shrink-0"
-                aria-label={copied ? t("common.copied") : t("common.copy")}
-              >
-                {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-              </Button>
-              {isAdmin ? (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={openRoomSettings}
-                  className="h-9 w-9 shrink-0"
-                  aria-label={t("roomSettings.title")}
-                >
-                  <Settings className="w-4 h-4" />
-                </Button>
-              ) : null}
-              {callStatus !== "idle" && callPeer ? (
-                <Button
-                  variant={callStatus === "active" ? "destructive" : "secondary"}
-                  size="sm"
-                  onClick={handleEndCall}
-                  className="h-9 shrink-0"
-                >
-                  {callStatus === "active" ? t("call.endedTitle") : t("common.cancel")}
-                </Button>
-              ) : null}
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={handleLeaveRoom}
-                className="h-9 w-9 shrink-0"
-                aria-label={t("common.leave")}
-              >
-                <LogOut className="w-4 h-4" />
-              </Button>
-            </div>
+                 </div>
+             </SheetContent>
+        </Sheet>
 
-            {callStatus === "active" && callPeer ? (
-              <div className="shrink-0 border-b border-border bg-muted/20 px-3 py-3">
-                <div className="flex items-center gap-3">
-                  <Avatar className="h-10 w-10">
-                    <AvatarImage src={callPeerUser?.avatar || ""} alt={callPeer.name} />
-                    <AvatarFallback>{callPeer.name?.slice(0, 1) || "?"}</AvatarFallback>
-                  </Avatar>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-semibold truncate">{callPeer.name}</div>
-                    <div className="text-xs text-muted-foreground">{t("call.acceptedDesc", { name: callPeer.name })}</div>
-                  </div>
-                  <div className="text-xs text-muted-foreground font-mono tabular-nums">
-                    {formatCallDuration(callDurationSec)}
-                  </div>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <Button
-                    variant={isCallMuted ? "secondary" : "outline"}
-                    size="sm"
-                    onClick={() => setIsCallMuted((prev) => !prev)}
-                    className="h-9"
-                    aria-label={isCallMuted ? t("call.unmute") : t("call.mute")}
-                  >
-                    {isCallMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                    <span className="ml-2">{isCallMuted ? t("call.unmute") : t("call.mute")}</span>
-                  </Button>
-                  <Button
-                    variant={callLiveEnabled ? "secondary" : "outline"}
-                    size="sm"
-                    onClick={handleToggleCallLive}
-                    className="h-9"
-                    aria-label={t("voice.liveTranslationTitle")}
-                  >
-                    {t("voice.liveTranslationTitle")}
-                  </Button>
-                  <Button variant="destructive" size="sm" onClick={handleEndCall} className="h-9">
-                    <PhoneOff className="w-4 h-4" />
-                    <span className="ml-2">{t("call.hangup")}</span>
-                  </Button>
-                </div>
-              </div>
-            ) : null}
+        <Dialog open={incomingCallOpen} onOpenChange={(open) => {
+            setIncomingCallOpen(open);
+            if (!open && callStatusRef.current === "incoming") void handleRejectCall();
+        }}>
+             <DialogContent className="sm:max-w-[380px] p-6">
+                 <div className="flex flex-col items-center gap-4">
+                     <Avatar className="w-20 h-20"><AvatarImage src={users.find(u => u.id === callPeer?.id)?.avatar} /><AvatarFallback>?</AvatarFallback></Avatar>
+                     <div className="text-center">
+                         <h3 className="text-lg font-semibold">{t("call.incomingTitle")}</h3>
+                         <p className="text-muted-foreground">{callPeer?.name}</p>
+                     </div>
+                     <div className="flex gap-4 w-full justify-center mt-4">
+                         <Button variant="outline" className="flex-1 border-destructive text-destructive" onClick={handleRejectCall}>{t("call.reject")}</Button>
+                         <Button className="flex-1" onClick={handleAcceptCall}>{t("call.accept")}</Button>
+                     </div>
+                 </div>
+             </DialogContent>
+        </Dialog>
 
-            <ChatArea
-              variant="embedded"
-              messages={messages}
-              speechRate={settings.speechRate}
-              speechVolume={settings.speechVolume}
-              autoPlay={settings.autoPlayTranslations && callStatus !== "active"}
-            />
-
-            <div className="shrink-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-t border-border shadow-sm">
-              {(isRecording ||
-                isProcessing ||
-                callStatus === "active") &&
-                (formattedLiveTranslation.trim() ||
-                  remoteLiveTranslation.trim() ||
-                  (callStatus === "active" && callLiveEnabled && formattedLiveTranscript.trim()) ||
-                  (callStatus === "active" && remoteLiveTranscript.trim()) ||
-                  !liveSpeechSupported) ? (
-                <div className="absolute bottom-full left-0 right-0 p-4 bg-gradient-to-t from-background via-background/90 to-transparent pointer-events-none flex justify-center">
-                  <div className="w-full max-w-4xl bg-card/95 border shadow-lg rounded-xl p-4 pointer-events-auto backdrop-blur animate-in fade-in slide-in-from-bottom-2">
-                    {!liveSpeechSupported ? (
-                      <div className="text-xs text-muted-foreground">{t("voice.liveUnsupported")}</div>
-                    ) : null}
-                    {(callStatus === "active" && callLiveEnabled && liveTranscript.trim()) ? (
-                      <div className="mb-4">
-                        <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                          {userName || "我"}
-                        </div>
-                        <div className="text-base leading-relaxed whitespace-pre-wrap break-all">
-                          <span className="text-foreground font-bold">{confirmedTranscript}</span>
-                          <span className={isInterim ? "text-muted-foreground text-sm" : "text-foreground font-bold"}>
-                            {liveTranscript.slice(confirmedTranscript.length)}
-                          </span>
-                        </div>
-                      </div>
-                    ) : null}
-                    {remoteLiveTranslation.trim() ? (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="order-2 md:order-1">
-                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                            {remoteLiveUserName ? `${remoteLiveUserName} · ${t("voice.liveTranslationTitle")}` : t("voice.liveTranslationTitle")}
-                          </div>
-                          <div className="text-base font-medium leading-relaxed text-primary whitespace-pre-wrap">{remoteLiveTranslation}</div>
-                        </div>
-                        {/* Show original transcript on the right if available, or just empty space utilization */}
-                        {remoteLiveTranscript.trim() && (
-                          <div className="order-1 md:order-2 opacity-60">
-                            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                              {t("voice.originalTranscript")}
-                            </div>
-                            <div className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
-                              <span className="text-foreground font-medium">{remoteConfirmedTranscript}</span>
-                              <span className="opacity-70">{remoteLiveTranscript.slice(remoteConfirmedTranscript.length)}</span>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ) : callStatus === "active" && remoteLiveTranscript.trim() ? (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="order-2 md:order-1">
-                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                            {remoteLiveUserName ? `${remoteLiveUserName} · ${t("voice.liveTranslationTitle")}` : t("voice.liveTranslationTitle")}
-                          </div>
-                          <div className="text-sm text-muted-foreground animate-pulse">正在翻译…</div>
-                        </div>
-                        <div className="order-1 md:order-2 opacity-60">
-                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                            {t("voice.originalTranscript")}
-                          </div>
-                          <div className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
-                            <span className="text-foreground font-medium">{remoteConfirmedTranscript}</span>
-                            <span className="opacity-70">{remoteLiveTranscript.slice(remoteConfirmedTranscript.length)}</span>
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="max-w-screen-xl mx-auto px-3 py-2 lg:px-6 lg:py-3">
-
-                {/* Mobile: Compact Single Row Layout */}
-                <div className="flex md:hidden w-full items-end justify-between gap-2 px-1 pb-1">
-                  <div className="flex-1 min-w-0 max-w-[100px] flex flex-col gap-1">
-                    <Label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider text-center">{t("language.source")}</Label>
-                    <Select
-                      value={sourceLanguage.code}
-                      onValueChange={(code) => {
-                        const next = sourceLanguageOptions.find((item) => item.code === code)
-                        if (next) setSourceLanguage(next)
-                      }}
-                    >
-                      <SelectTrigger className="w-full h-10 bg-muted/30 border-muted-foreground/20 px-2">
-                        <SelectValue>
-                          <span className="flex items-center justify-center gap-1.5">
-                            <span className="text-xl leading-none">{sourceLanguage.flag}</span>
-                            <span className="truncate text-xs font-medium">{sourceLanguage.name}</span>
-                          </span>
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {sourceLanguageOptions.map((lang) => (
-                          <SelectItem key={lang.code} value={lang.code}>
-                            <span className="flex items-center gap-2">
-                              <span>{lang.flag}</span>
-                              <span>{lang.name}</span>
-                            </span>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="shrink-0 relative z-20 flex flex-col items-center">
-                    <VoiceControls
-                      variant="stacked"
-                      showHint={true}
-                      className="gap-1"
-                      isProcessing={isProcessing}
-                      onRecordingComplete={handleRecordingComplete}
-                      onRecordingChange={(next) => setIsRecording(next)}
-                    />
-                    <div className="mt-1 text-[9px] text-muted-foreground/60 font-medium whitespace-nowrap">
-                      {t("language.hint", { source: sourceLanguage.name, target: targetLanguage.name })}
-                    </div>
-                    {isMobile && settings.autoPlayTranslations ? (
-                      <div className="mt-1 flex items-center gap-1">
-                        <Button
-                          variant={isTtsUnlocked ? "secondary" : "outline"}
-                          size="sm"
-                          className="h-7 px-2 text-[10px]"
-                          onClick={handleUnlockTts}
-                          disabled={!ttsSupported}
-                        >
-                          {isTtsUnlocked ? "语音已启用" : "启用语音"}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-[10px]"
-                          onClick={handleTestTts}
-                          disabled={!ttsSupported}
-                        >
-                          测试
-                        </Button>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="flex-1 min-w-0 max-w-[100px] flex flex-col gap-1">
-                    <Label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider text-center">{t("language.target")}</Label>
-                    <Select
-                      value={targetLanguage.code}
-                      onValueChange={(code) => {
-                        const next = SUPPORTED_LANGUAGES.find((item) => item.code === code)
-                        if (next) setTargetLanguage(next)
-                      }}
-                    >
-                      <SelectTrigger className="w-full h-10 bg-muted/30 border-muted-foreground/20 px-2">
-                        <SelectValue>
-                          <span className="flex items-center justify-center gap-1.5">
-                            <span className="truncate text-xs font-medium">{targetLanguage.name}</span>
-                            <span className="text-xl leading-none">{targetLanguage.flag}</span>
-                          </span>
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {SUPPORTED_LANGUAGES.map((lang) => (
-                          <SelectItem key={lang.code} value={lang.code}>
-                            <span className="flex items-center gap-2">
-                              <span>{lang.flag}</span>
-                              <span>{lang.name}</span>
-                            </span>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
-                {/* Desktop: Centered Layout */}
-                <div className="hidden md:flex items-center gap-6 w-full justify-center">
-                  <div className="flex-1 flex flex-col gap-1 items-end">
-                    <div className="w-full max-w-[200px]">
-                      <div className="flex items-center justify-end gap-2 mb-1">
-                        <Label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t("language.source")}</Label>
-                      </div>
-                      <Select
-                        value={sourceLanguage.code}
-                        onValueChange={(code) => {
-                          const next = sourceLanguageOptions.find((item) => item.code === code)
-                          if (next) setSourceLanguage(next)
-                        }}
-                      >
-                        <SelectTrigger className="w-full h-11 bg-muted/30 border-muted-foreground/20 text-sm">
-                          <SelectValue>
-                            <span className="flex items-center gap-2 truncate justify-end">
-                              <span className="truncate">{sourceLanguage.name}</span>
-                              <span className="text-xl leading-none">{sourceLanguage.flag}</span>
-                            </span>
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {sourceLanguageOptions.map((lang) => (
-                            <SelectItem key={lang.code} value={lang.code}>
-                              <span className="flex items-center gap-2">
-                                <span>{lang.flag}</span>
-                                <span>{lang.name}</span>
-                              </span>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-
-                  <div className="shrink-0 relative z-20 flex flex-col items-center">
-                    <VoiceControls
-                      variant="stacked"
-                      showHint={true}
-                      className="gap-1"
-                      isProcessing={isProcessing}
-                      onRecordingComplete={handleRecordingComplete}
-                      onRecordingChange={(next) => setIsRecording(next)}
-                    />
-                    <div className="mt-1 w-max text-[10px] text-muted-foreground/60 font-medium whitespace-nowrap">
-                      {t("language.hint", { source: sourceLanguage.name, target: targetLanguage.name })}
-                    </div>
-                    {settings.autoPlayTranslations ? (
-                      <div className="mt-1 flex items-center gap-1">
-                        <Button
-                          variant={isTtsUnlocked ? "secondary" : "outline"}
-                          size="sm"
-                          className="h-7 px-2 text-[10px]"
-                          onClick={handleUnlockTts}
-                          disabled={!ttsSupported}
-                        >
-                          {isTtsUnlocked ? "语音已启用" : "启用语音"}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-[10px]"
-                          onClick={handleTestTts}
-                          disabled={!ttsSupported}
-                        >
-                          测试
-                        </Button>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="flex-1 flex flex-col gap-1 items-start">
-                    <div className="w-full max-w-[200px]">
-                      <div className="flex items-center justify-start gap-2 mb-1">
-                        <Label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t("language.target")}</Label>
-                      </div>
-                      <Select
-                        value={targetLanguage.code}
-                        onValueChange={(code) => {
-                          const next = SUPPORTED_LANGUAGES.find((item) => item.code === code)
-                          if (next) setTargetLanguage(next)
-                        }}
-                      >
-                        <SelectTrigger className="w-full h-11 bg-muted/30 border-muted-foreground/20 text-sm">
-                          <SelectValue>
-                            <span className="flex items-center gap-2 truncate">
-                              <span className="text-xl leading-none">{targetLanguage.flag}</span>
-                              <span>{targetLanguage.name}</span>
-                            </span>
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {SUPPORTED_LANGUAGES.map((lang) => (
-                            <SelectItem key={lang.code} value={lang.code}>
-                              <span className="flex items-center gap-2">
-                                <span>{lang.flag}</span>
-                                <span>{lang.name}</span>
-                              </span>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
-
-      <Dialog open={roomSettingsOpen} onOpenChange={setRoomSettingsOpen}>
-        <DialogContent className="sm:max-w-[480px]">
-          <DialogHeader>
-            <DialogTitle>{t("roomSettings.title")}</DialogTitle>
-            <DialogDescription>{t("roomSettings.desc")}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>{t("roomSettings.joinModeLabel")}</Label>
-              <RadioGroup
-                value={roomSettingsJoinMode}
-                onValueChange={(v) => setRoomSettingsJoinMode(v as "public" | "password")}
-                className="grid gap-2"
-              >
-                <label className="flex items-center gap-3 rounded-md border bg-background px-3 py-2 cursor-pointer">
-                  <RadioGroupItem value="public" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium">{t("roomSettings.joinModePublic")}</div>
-                    <div className="text-xs text-muted-foreground">{t("roomSettings.joinModePublicDesc")}</div>
-                  </div>
-                </label>
-                <label className="flex items-center gap-3 rounded-md border bg-background px-3 py-2 cursor-pointer">
-                  <RadioGroupItem value="password" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium">{t("roomSettings.joinModePassword")}</div>
-                    <div className="text-xs text-muted-foreground">{t("roomSettings.joinModePasswordDesc")}</div>
-                  </div>
-                </label>
-              </RadioGroup>
-            </div>
-
-            {roomSettingsJoinMode === "password" ? (
-              <div className="space-y-2">
-                <Label htmlFor="roomSettingsPassword">{t("roomSettings.passwordLabel")}</Label>
-                <Input
-                  id="roomSettingsPassword"
-                  type="password"
-                  placeholder={t("roomSettings.passwordPlaceholder")}
-                  value={roomSettingsPassword}
-                  onChange={(e) => setRoomSettingsPassword(e.target.value)}
-                />
-              </div>
-            ) : null}
-          </div>
-          <DialogFooter>
-            <Button onClick={saveRoomSettings} disabled={roomSettingsSaving}>
-              {roomSettingsSaving ? t("roomSettings.saving") : t("roomSettings.save")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={incomingCallOpen}
-        onOpenChange={(open) => {
-          setIncomingCallOpen(open)
-          if (!open && callStatusRef.current === "incoming") {
-            void handleRejectCall()
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-[380px] p-8">
-          <div className="flex flex-col items-center gap-6">
-            <div className="relative">
-              <div className="absolute inset-0 bg-primary/20 rounded-full animate-ping opacity-75" />
-              <Avatar className="w-24 h-24 border-4 border-background shadow-xl relative bg-background">
-                <AvatarImage src={users.find(u => u.id === callPeer?.id)?.avatar} />
-                <AvatarFallback className="text-2xl bg-primary/10 text-primary">
-                  {callPeer?.name?.slice(0, 1) || "?"}
-                </AvatarFallback>
-              </Avatar>
-            </div>
-
-            <div className="text-center space-y-2">
-              <DialogTitle className="text-2xl font-semibold">{t("call.incomingTitle")}</DialogTitle>
-              <DialogDescription className="text-base text-muted-foreground">
-                {callPeer ? t("call.incomingDesc", { name: callPeer.name }) : ""}
-              </DialogDescription>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4 w-full mt-6">
-            <Button
-              variant="outline"
-              onClick={handleRejectCall}
-              className="h-14 rounded-full border-destructive/50 text-destructive hover:bg-destructive hover:text-destructive-foreground hover:border-destructive transition-all"
-            >
-              <PhoneOff className="w-5 h-5 mr-2" />
-              {t("call.reject")}
-            </Button>
-            <Button
-              onClick={handleAcceptCall}
-              className="h-14 rounded-full shadow-lg shadow-primary/30 transition-all hover:scale-105 active:scale-95 text-base font-medium"
-            >
-              <Phone className="w-5 h-5 mr-2 fill-current" />
-              {t("call.accept")}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
