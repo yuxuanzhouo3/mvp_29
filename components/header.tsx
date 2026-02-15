@@ -1,6 +1,6 @@
 "use client"
 
-import { Mic2, Trash2, Users, Menu } from "lucide-react"
+import { Mic2, Trash2, Users, Menu, Copy, LogOut, MoreVertical, Globe, UserCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { SettingsDialog, type AppSettings } from "@/components/settings-dialog"
@@ -10,8 +10,12 @@ import { useI18n } from "@/components/i18n-provider"
 import { UI_LOCALES, type UiLocale } from "@/lib/i18n"
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Badge } from "@/components/ui/badge"
+import { Separator } from "@/components/ui/separator"
 import { useState } from "react"
 import Link from "next/link"
+import Image from "next/image"
 
 type HeaderProps = {
   onClearChat?: () => void
@@ -22,6 +26,8 @@ type HeaderProps = {
   roomUserId?: string
   userCount?: number
   onShowUsers?: () => void
+  onCopyRoomId?: () => void
+  onLeaveRoom?: () => void
 }
 
 export function Header({
@@ -33,6 +39,8 @@ export function Header({
   roomUserId,
   userCount,
   onShowUsers,
+  onCopyRoomId,
+  onLeaveRoom,
 }: HeaderProps) {
   const { profile, user, isLoading, signOut } = useAuth()
   const router = useRouter()
@@ -64,51 +72,69 @@ export function Header({
 
   return (
     <header className="border-b border-border bg-card">
-      <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-          <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
-            <Mic2 className="w-6 h-6 text-primary-foreground" />
-          </div>
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">{t("app.name")}</h1>
-            <p className="text-sm text-muted-foreground">
-              {roomId ? (
-                <span className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-auto p-0 hover:bg-transparent text-muted-foreground hover:text-foreground font-normal"
-                    onClick={onShowUsers}
-                  >
-                    <Users className="w-3 h-3 mr-1" />
-                    <span className="lg:hidden">{userCount ?? 0}</span>
-                    <span className="hidden lg:inline">{t("header.online", { count: userCount ?? 0 })}</span>
-                  </Button>
-                  {messageCount > 0 && (
-                    <>
-                      <span className="lg:hidden"> • {messageCount}</span>
-                      <span className="hidden lg:inline"> • {t("header.messages", { count: messageCount })}</span>
-                    </>
-                  )}
-                </span>
-              ) : messageCount > 0 ? (
-                t("header.messages", { count: messageCount })
-              ) : (
-                t("header.subtitle.default")
-              )}
-            </p>
-          </div>
-        </Link>
+      <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-6">
+          {/* Left: Logo & Title */}
+          <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity shrink-0">
+            <div className="w-9 h-9 relative">
+              <Image 
+                src="/logo.png" 
+                alt="MornSpeaker Logo" 
+                fill
+                className="rounded-lg object-cover"
+                priority
+              />
+            </div>
+            <h1 className="text-lg font-bold text-foreground tracking-tight">{t("app.name")}</h1>
+          </Link>
 
-        <div className="flex items-center gap-2">
+          {/* Left: Room Status (Desktop Only) */}
+          {roomId && (
+            <div className="hidden lg:flex items-center gap-3">
+              <div className="h-5 w-[1px] bg-border" />
+              <Badge variant="secondary" className="px-3 py-1 text-sm font-medium gap-2 border-primary/10 bg-primary/5">
+                <span className="text-muted-foreground">{t("common.roomId")}:</span>
+                <span className="text-foreground">{roomId}</span>
+              </Badge>
+              <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                <Users className="w-4 h-4" />
+                <span>{t("header.online", { count: userCount ?? 0 })}</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3">
           {/* Desktop Actions */}
           <div className="hidden lg:flex items-center gap-2">
+            {/* Action Group: Room Controls */}
+            {roomId && (
+              <div className="flex items-center gap-1 mr-2">
+                {onCopyRoomId && (
+                  <Button variant="ghost" size="sm" onClick={onCopyRoomId} className="h-8 gap-1.5 text-muted-foreground hover:text-foreground">
+                    <Copy className="w-3.5 h-3.5" />
+                    <span className="text-xs font-medium">{t("common.copy")}</span>
+                  </Button>
+                )}
+                <SettingsDialog onSettingsChange={onSettingsChange} roomId={roomId} roomUserId={roomUserId} onProfileSaved={onProfileSaved} />
+                {onLeaveRoom && (
+                  <Button variant="ghost" size="sm" onClick={onLeaveRoom} className="h-8 gap-1.5 text-destructive hover:text-destructive hover:bg-destructive/10">
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span className="text-xs font-medium">{t("common.leave")}</span>
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {roomId && <div className="h-5 w-[1px] bg-border mx-1" />}
+
+            {/* Action Group: User & System */}
             <Select value={locale} onValueChange={(value) => void persistLocale(value as UiLocale)}>
-              <SelectTrigger className="w-[110px]">
+              <SelectTrigger className="w-[100px] h-8 border-none bg-transparent hover:bg-muted/50 focus:ring-0 shadow-none">
                 <SelectValue>
                   <span className="flex items-center gap-2">
-                    <span>{currentLocale.flag}</span>
-                    <span className="hidden sm:inline">{currentLocale.label}</span>
+                    <Globe className="w-3.5 h-3.5 text-muted-foreground" />
+                    <span className="text-sm">{currentLocale.label}</span>
                   </span>
                 </SelectValue>
               </SelectTrigger>
@@ -123,30 +149,32 @@ export function Header({
                 ))}
               </SelectContent>
             </Select>
+
             {!isLoading && user && (
-              <>
-                <div className="hidden xl:block text-xs text-muted-foreground max-w-[220px] truncate">
-                  {profile?.display_name || user.email}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={async () => {
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-8 gap-2 pl-2 pr-3 rounded-full hover:bg-muted/50">
+                    <div className="w-5 h-5 rounded-full bg-primary/10 flex items-center justify-center text-primary text-xs font-bold">
+                      {profile?.display_name?.[0]?.toUpperCase() || user.email?.[0]?.toUpperCase()}
+                    </div>
+                    <span className="text-sm font-medium max-w-[100px] truncate">
+                      {profile?.display_name || user.email?.split("@")[0]}
+                    </span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>My Account</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={async () => {
                     await signOut()
                     router.replace("/login")
-                  }}
-                >
-                  {t("common.logout")}
-                </Button>
-              </>
+                  }} className="text-destructive focus:text-destructive">
+                    <LogOut className="w-4 h-4 mr-2" />
+                    {t("common.logout")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
-            {messageCount > 0 && onClearChat && (
-              <Button variant="ghost" size="sm" onClick={onClearChat} className="gap-2">
-                <Trash2 className="w-4 h-4" />
-                <span className="hidden xl:inline">{t("common.clearChat")}</span>
-              </Button>
-            )}
-            <SettingsDialog onSettingsChange={onSettingsChange} roomId={roomId} roomUserId={roomUserId} onProfileSaved={onProfileSaved} />
           </div>
 
           {/* Mobile Actions */}
