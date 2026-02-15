@@ -3984,15 +3984,40 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
             if (!open && callStatusRef.current === "incoming") void handleRejectCall();
         }}>
              <DialogContent className="sm:max-w-[380px] p-6">
-                 <div className="flex flex-col items-center gap-4">
-                     <Avatar className="w-20 h-20"><AvatarImage src={users.find(u => u.id === callPeer?.id)?.avatar} /><AvatarFallback>?</AvatarFallback></Avatar>
-                     <div className="text-center">
-                         <h3 className="text-lg font-semibold">{t("call.incomingTitle")}</h3>
-                         <p className="text-muted-foreground">{callPeer?.name}</p>
+                 <div className="flex flex-col items-center gap-6 py-4">
+                     {/* Avatar with Ripple Effect */}
+                     <div className="relative">
+                         <div className="absolute -inset-4 rounded-full bg-primary/20 animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite]" />
+                         <div className="absolute -inset-8 rounded-full bg-primary/10 animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite_200ms]" />
+                         <Avatar className="w-24 h-24 border-4 border-background relative z-10 shadow-xl">
+                             <AvatarImage src={users.find(u => u.id === callPeer?.id)?.avatar} />
+                             <AvatarFallback className="text-2xl bg-primary/10 text-primary">
+                                {users.find(u => u.id === callPeer?.id)?.name?.slice(0, 1) || "?"}
+                             </AvatarFallback>
+                         </Avatar>
                      </div>
-                     <div className="flex gap-4 w-full justify-center mt-4">
-                         <Button variant="outline" className="flex-1 border-destructive text-destructive" onClick={handleRejectCall}>{t("call.reject")}</Button>
-                         <Button className="flex-1" onClick={handleAcceptCall}>{t("call.accept")}</Button>
+                     
+                     <div className="text-center space-y-1">
+                         <h3 className="text-xl font-semibold tracking-tight">{t("call.incomingTitle")}</h3>
+                         <p className="text-base text-muted-foreground font-medium">{callPeer?.name}</p>
+                     </div>
+
+                     <div className="flex gap-4 w-full justify-center mt-2">
+                         <Button 
+                            variant="outline" 
+                            size="lg"
+                            className="flex-1 border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive h-12 rounded-full transition-all" 
+                            onClick={handleRejectCall}
+                         >
+                            {t("call.reject")}
+                         </Button>
+                         <Button 
+                            size="lg"
+                            className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground h-12 rounded-full shadow-lg hover:shadow-xl transition-all animate-pulse" 
+                            onClick={handleAcceptCall}
+                         >
+                            {t("call.accept")}
+                         </Button>
                      </div>
                  </div>
              </DialogContent>
