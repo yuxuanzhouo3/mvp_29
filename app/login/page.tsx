@@ -28,14 +28,21 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
-  const [view, setView] = useState<"form" | "verify">("form")
+  const [view, setView] = useState<"form" | "verify" | "reset">("form")
   const [emailCode, setEmailCode] = useState("")
+  const [resetCode, setResetCode] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
+  const [resetResendCountdown, setResetResendCountdown] = useState(0)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isInMiniProgram, setIsInMiniProgram] = useState(false)
   const [verificationId, setVerificationId] = useState<string | null>(null)
   const [verificationEmail, setVerificationEmail] = useState<string | null>(null)
+  const [resetVerificationId, setResetVerificationId] = useState<string | null>(null)
+  const [resetVerificationEmail, setResetVerificationEmail] = useState<string | null>(null)
   const verificationRequestLock = useRef(false)
   const verificationVerifyLock = useRef(false)
+  const resetRequestLock = useRef(false)
+  const resetVerifyLock = useRef(false)
   const wechatRedirectHandledRef = useRef(false)
   const tencentLogoutKey = "tencent:auth:logged_out"
   const wechatAppId = (
@@ -283,6 +290,15 @@ export default function LoginPage() {
     void handleMpLoginCallback()
   }, [handleMpLoginCallback])
 
+  useEffect(() => {
+    if (view !== "reset") return
+    if (resetResendCountdown <= 0) return
+    const timer = window.setTimeout(() => {
+      setResetResendCountdown((prev) => (prev > 0 ? prev - 1 : 0))
+    }, 1000)
+    return () => window.clearTimeout(timer)
+  }, [resetResendCountdown, view])
+
   const formatAuthError = (e: unknown): { title: string; description: string; variant?: "destructive"; nextView?: "verify" } => {
     const message =
       e instanceof Error ? e.message : typeof e === "string" ? e : "操作失败"
@@ -330,6 +346,14 @@ export default function LoginPage() {
       }
     }
     return "操作失败"
+  }
+
+  const validateTencentPassword = (value: string): boolean => {
+    if (!value) return false
+    if (value.length < 6 || value.length > 20) return false
+    const hasLetter = /[A-Za-z]/.test(value)
+    const hasNumber = /\d/.test(value)
+    return hasLetter && hasNumber
   }
 
   const handleEmailLogin = async () => {
@@ -624,6 +648,116 @@ export default function LoginPage() {
     }
   }
 
+  const handleSendResetCode = async () => {
+    setIsSubmitting(true)
+    try {
+      if (!isTencent) {
+        toast({ title: "当前环境暂不支持", description: "请联系管理员处理密码找回。", variant: "destructive" })
+        return
+      }
+      const trimmedEmail = email.trim()
+      if (!trimmedEmail) {
+        toast({ title: "邮箱不能为空", description: "请输入邮箱后重试。", variant: "destructive" })
+        return
+      }
+      const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
+      const auth = getCloudBaseAuth()
+      await ensureCloudbasePersistence(auth)
+      if (resetRequestLock.current) return
+      resetRequestLock.current = true
+      try {
+        const verification = await auth.getVerification({ email: trimmedEmail })
+        setResetVerificationId(verification.verification_id)
+        setResetVerificationEmail(trimmedEmail)
+        if (!verification.is_user) {
+          toast({ title: "邮箱未注册", description: "该邮箱尚未注册，请先完成注册。", variant: "destructive" })
+          return
+        }
+        setResetResendCountdown(60)
+        toast({ title: "验证码已发送", description: "请查收邮箱中的验证码。" })
+      } finally {
+        resetRequestLock.current = false
+      }
+    } catch (e) {
+      const message = extractTencentAuthError(e)
+      toast({ title: "发送失败", description: message, variant: "destructive" })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleResetPassword = async () => {
+    setIsSubmitting(true)
+    try {
+      if (!isTencent) {
+        toast({ title: "当前环境暂不支持", description: "请联系管理员处理密码找回。", variant: "destructive" })
+        return
+      }
+      const trimmedEmail = email.trim()
+      const trimmedResetCode = resetCode.trim()
+      if (!trimmedEmail || !trimmedResetCode || !password || !confirmPassword) {
+        toast({ title: "信息不完整", description: "请填写邮箱、新密码、确认密码和验证码。", variant: "destructive" })
+        return
+      }
+      if (password !== confirmPassword) {
+        toast({ title: "两次密码不一致", description: "请确认两次输入的新密码相同。", variant: "destructive" })
+        return
+      }
+      if (!validateTencentPassword(password)) {
+        toast({ title: "密码不符合要求", description: "请使用包含字母和数字的 6-20 位组合。", variant: "destructive" })
+        return
+      }
+      if (resetVerificationEmail && resetVerificationEmail !== trimmedEmail) {
+        toast({ title: "邮箱不一致", description: "请使用接收验证码的邮箱完成重置。", variant: "destructive" })
+        return
+      }
+
+      const { getCloudBaseAuth } = await import("@/lib/cloudbase-client")
+      const auth = getCloudBaseAuth()
+      await ensureCloudbasePersistence(auth)
+      if (resetVerifyLock.current) return
+      resetVerifyLock.current = true
+      try {
+        const verifyRes = await auth.verify({
+          verification_code: trimmedResetCode,
+          verification_id: resetVerificationId || undefined,
+        })
+        const verificationToken = verifyRes?.verification_token
+        if (!verificationToken) {
+          throw new Error("验证码无效或已过期，请重新发送后重试")
+        }
+        await auth.resetPassword({
+          email: trimmedEmail,
+          new_password: password,
+          verification_token: verificationToken,
+        })
+      } finally {
+        resetVerifyLock.current = false
+      }
+
+      toast({ title: "密码重置成功", description: "请使用新密码登录。" })
+      setPassword("")
+      setConfirmPassword("")
+      setResetCode("")
+      setResetResendCountdown(0)
+      setResetVerificationId(null)
+      setResetVerificationEmail(null)
+      setView("form")
+    } catch (e) {
+      const rawMessage = extractTencentAuthError(e)
+      const normalized = rawMessage.toLowerCase()
+      let description = rawMessage
+      if (normalized.includes("invalid_verification_code")) {
+        description = "验证码无效或已过期，请重新发送后重试。"
+      } else if (normalized.includes("invalid_password")) {
+        description = "密码不符合要求，请使用包含字母和数字的 6-20 位组合。"
+      }
+      toast({ title: "重置失败", description, variant: "destructive" })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   const handleGoogleLogin = async () => {
     setIsSubmitting(true)
     try {
@@ -749,6 +883,8 @@ export default function LoginPage() {
           <CardDescription>
             {view === "verify"
               ? "输入邮箱验证码完成注册并登录"
+              : view === "reset"
+                ? "通过邮箱验证码重置密码"
               : isTencent
                 ? (canUseWechatLogin ? "使用邮箱或微信继续" : "仅使用邮箱继续")
                 : "使用邮箱或 Google 账号继续"}
@@ -771,14 +907,14 @@ export default function LoginPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="password">密码</Label>
+              <Label htmlFor="password">{view === "reset" ? "新密码" : "密码"}</Label>
               <Input
                 id="password"
                 type="password"
-                placeholder="请输入密码"
+                placeholder={view === "reset" ? "请输入新密码" : "请输入密码"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                autoComplete={view === "verify" ? "new-password" : "current-password"}
+                autoComplete={view === "form" ? "current-password" : "new-password"}
                 required
               />
               <p className="text-xs text-muted-foreground">密码需包含字母和数字，长度 6-20 位。</p>
@@ -809,7 +945,73 @@ export default function LoginPage() {
                 <Button
                   variant="ghost"
                   className="w-full"
-                  onClick={() => setView("form")}
+                  onClick={() => {
+                    setEmailCode("")
+                    setVerificationId(null)
+                    setVerificationEmail(null)
+                    setView("form")
+                  }}
+                  disabled={isSubmitting}
+                >
+                  返回登录 / 注册
+                </Button>
+              </>
+            ) : view === "reset" ? (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="confirmPassword">确认新密码</Label>
+                  <Input
+                    id="confirmPassword"
+                    type="password"
+                    placeholder="请再次输入新密码"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    autoComplete="new-password"
+                    required
+                  />
+                  {confirmPassword && password !== confirmPassword ? (
+                    <p className="text-xs text-destructive">两次输入的密码不一致</p>
+                  ) : null}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="resetCode">邮箱验证码</Label>
+                  <Input
+                    id="resetCode"
+                    inputMode="numeric"
+                    placeholder="请输入邮件中的验证码"
+                    value={resetCode}
+                    onChange={(e) => setResetCode(e.target.value)}
+                    autoComplete="one-time-code"
+                    required
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Button
+                    onClick={handleResetPassword}
+                    disabled={isSubmitting || !email.trim() || !password || !confirmPassword || password !== confirmPassword || !resetCode.trim()}
+                  >
+                    重置密码
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={handleSendResetCode}
+                    disabled={isSubmitting || !email.trim() || resetResendCountdown > 0}
+                  >
+                    {resetResendCountdown > 0 ? `${resetResendCountdown}s后重发` : "发送验证码"}
+                  </Button>
+                </div>
+                <Button
+                  variant="ghost"
+                  className="w-full"
+                  onClick={() => {
+                    setPassword("")
+                    setConfirmPassword("")
+                    setResetCode("")
+                    setResetResendCountdown(0)
+                    setResetVerificationId(null)
+                    setResetVerificationEmail(null)
+                    setView("form")
+                  }}
                   disabled={isSubmitting}
                 >
                   返回登录 / 注册
@@ -825,6 +1027,27 @@ export default function LoginPage() {
                 </Button>
               </div>
             )}
+
+            {view === "form" && isTencent ? (
+              <div className="flex justify-center pt-1">
+                <Button
+                  variant="link"
+                  className="h-auto p-0 text-sm font-medium text-muted-foreground hover:text-primary focus-visible:text-primary"
+                  onClick={() => {
+                    setPassword("")
+                    setConfirmPassword("")
+                    setResetCode("")
+                    setResetResendCountdown(0)
+                    setResetVerificationId(null)
+                    setResetVerificationEmail(null)
+                    setView("reset")
+                  }}
+                  disabled={isSubmitting}
+                >
+                  忘记密码？通过邮箱验证码找回
+                </Button>
+              </div>
+            ) : null}
           </div>
 
           {view === "form" ? (

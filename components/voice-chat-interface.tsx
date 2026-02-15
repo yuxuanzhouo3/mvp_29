@@ -209,6 +209,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const pollAbortRef = useRef<AbortController | null>(null)
   const pollInFlightRef = useRef(false)
   const pollFailureCountRef = useRef(0)
+  const lastSyncedMessageAtRef = useRef<string | null>(null)
+  const pollSyncRoomRef = useRef<string | null>(null)
   const translationCacheRef = useRef<Map<string, string>>(new Map())
   const leaveInitiatedRef = useRef(false)
   const [roomSettingsOpen, setRoomSettingsOpen] = useState(false)
@@ -2756,6 +2758,8 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       setRoomUserId("")
       setJoinedAuthUserId(null)
       setRoomSettings(null)
+      lastSyncedMessageAtRef.current = null
+      pollSyncRoomRef.current = null
       resetCallState()
       leaveInitiatedRef.current = false
       if (pollIntervalRef.current) {
@@ -2854,6 +2858,11 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     if (!isInRoom || !roomId || !roomUserId) return
     const cache = translationCacheRef.current
     let cancelled = false
+    const syncRoomKey = `${roomId}:${roomUserId}`
+    if (pollSyncRoomRef.current !== syncRoomKey) {
+      pollSyncRoomRef.current = syncRoomKey
+      lastSyncedMessageAtRef.current = null
+    }
 
     const clearPolling = () => {
       if (pollIntervalRef.current) {
@@ -2878,12 +2887,12 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     const pollRoom = async () => {
       if (cancelled) return
       if (pollInFlightRef.current) {
-        schedulePoll(2000)
+        schedulePoll(4000)
         return
       }
       pollInFlightRef.current = true
       let shouldSchedule = true
-      let nextDelayMs = callActiveRef.current || callStatusRef.current !== "idle" ? 500 : 2000
+      let nextDelayMs = callActiveRef.current || callStatusRef.current !== "idle" ? 2000 : 4000
       try {
         const controller = new AbortController()
         if (pollAbortRef.current) pollAbortRef.current.abort()
@@ -2892,7 +2901,12 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         const response = await fetch("/api/rooms", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "poll", roomId, userId: roomUserId }),
+          body: JSON.stringify({
+            action: "poll",
+            roomId,
+            userId: roomUserId,
+            since: lastSyncedMessageAtRef.current ?? undefined,
+          }),
           cache: "no-store",
           signal: controller.signal,
         })
@@ -2933,6 +2947,18 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         }
 
         const room = data.room
+        let latestMessageMs = Number.NaN
+        if (Array.isArray(room.messages)) {
+          for (const msg of room.messages) {
+            const ts = Date.parse(msg.timestamp)
+            if (Number.isFinite(ts) && (!Number.isFinite(latestMessageMs) || ts > latestMessageMs)) {
+              latestMessageMs = ts
+            }
+          }
+          if (Number.isFinite(latestMessageMs)) {
+            lastSyncedMessageAtRef.current = new Date(latestMessageMs).toISOString()
+          }
+        }
         const nextSettings =
           data.settings && typeof data.settings.adminUserId === "string"
             ? ({ adminUserId: data.settings.adminUserId, joinMode: data.settings.joinMode === "password" ? "password" : "public" } as const)
@@ -3106,7 +3132,18 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           }),
         )
 
-        setMessages(newMessages)
+        setMessages((prev) => {
+          if (newMessages.length === 0) return prev
+          const byId = new Map<string, Message>()
+          for (const msg of prev) {
+            byId.set(msg.id, msg)
+          }
+          for (const msg of newMessages) {
+            byId.set(msg.id, msg)
+          }
+          const merged = Array.from(byId.values()).sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+          return merged.length > 240 ? merged.slice(-240) : merged
+        })
         pollFailureCountRef.current = 0
       } catch (error) {
         if (cancelled) return
@@ -3130,6 +3167,9 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       cancelled = true
       clearPolling()
       cache.clear()
+      if (pollSyncRoomRef.current === syncRoomKey) {
+        pollSyncRoomRef.current = null
+      }
     }
   }, [exitRoom, isInRoom, resolveLanguageCode, roomId, roomUserId, t, sourceLanguage.code, targetLanguage.code, uiLocaleToLanguageCode])
 
@@ -3367,6 +3407,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
 
   const handleClearChat = useCallback(() => {
     setMessages([])
+    lastSyncedMessageAtRef.current = null
     toast({
       title: t("toast.chatClearedTitle"),
       description: t("toast.chatClearedDesc"),
@@ -3396,18 +3437,23 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       setIsProcessing(true)
 
       try {
-        const audioUrl = await new Promise<string | undefined>((resolve) => {
-          const reader = new FileReader()
-          reader.onloadend = () => {
-            if (typeof reader.result === "string") {
-              resolve(reader.result)
-              return
+        let uploadedAudioUrl: string | undefined
+        if (isTencentDeploy) {
+          try {
+            const uploadForm = new FormData()
+            uploadForm.set("audio", new File([audioBlob], `voice-${Date.now()}.webm`, { type: audioBlob.type || "audio/webm" }))
+            const uploadRes = await fetch("/api/audio/upload", {
+              method: "POST",
+              body: uploadForm,
+            })
+            const uploadData = (await uploadRes.json().catch(() => null)) as { success?: boolean; audioUrl?: string } | null
+            if (uploadRes.ok && uploadData?.success && typeof uploadData.audioUrl === "string") {
+              uploadedAudioUrl = uploadData.audioUrl
             }
-            resolve(undefined)
+          } catch (uploadError) {
+            console.warn("[v0] Audio upload skipped:", uploadError)
           }
-          reader.onerror = () => resolve(undefined)
-          reader.readAsDataURL(audioBlob)
-        })
+        }
 
         const selectedLanguageCode = sourceLanguage.code
         const transcribedText = await transcribeAudio(audioBlob, selectedLanguageCode)
@@ -3424,7 +3470,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           originalText: transcribedText,
           originalLanguage: detectedLanguage,
           timestamp: new Date().toISOString(),
-          audioUrl,
+          audioUrl: uploadedAudioUrl,
         }
 
         const res = await fetch("/api/rooms", {
@@ -3471,7 +3517,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         }
       }
     },
-    [exitRoom, roomId, roomUserId, sourceLanguage.code, t, toast, targetLanguage.code, userName],
+    [exitRoom, isTencentDeploy, roomId, roomUserId, sourceLanguage.code, t, toast, targetLanguage.code, userName],
   )
 
   useEffect(() => {

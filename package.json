@@ -12,6 +12,8 @@
     "vercel-build": "node -v && npm -v && prisma generate && next build",
     "start": "next start",
     "start:migrate": "npx prisma db push --accept-data-loss && next start",
+    "cleanup:rooms:dry": "node scripts/cleanup-room-messages.js --dry-run",
+    "cleanup:rooms": "node scripts/cleanup-room-messages.js --execute",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },

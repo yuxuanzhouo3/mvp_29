@@ -9,13 +9,15 @@ import crypto from "node:crypto"
 
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000
 const USER_PRESENCE_TTL_MS = 60 * 1000
+const USER_PRESENCE_HEARTBEAT_MS = 15 * 1000
 const SIGNAL_TTL_MS = 60 * 1000
 const SETTINGS_KEY = "rooms_auto_delete_after_24h"
 const ROOM_ACTIVITY_COLUMN = "last_activity_at"
 const ROOM_SETTINGS_PREFIX = "room:"
 
 // poll 限流配置
-const POLL_RATE_LIMIT_MS = 1000  // poll 请求最小间隔1秒
+const POLL_RATE_LIMIT_MS = 2000  // poll 请求最小间隔2秒
+const POLL_MAX_MESSAGES = 120
 
 type SettingsCache = { value: boolean; fetchedAt: number }
 type CleanupCache = { lastRunAt: number }
@@ -420,7 +422,11 @@ function parseMessage(value: unknown): Message | null {
   if (!isNonEmptyString(msg.originalLanguage)) return null
   if (!isNonEmptyString(msg.timestamp)) return null
 
-  const audioUrl = typeof msg.audioUrl === "string" ? msg.audioUrl : undefined
+  const rawAudioUrl = typeof msg.audioUrl === "string" ? msg.audioUrl.trim() : ""
+  const audioUrl =
+    rawAudioUrl && !rawAudioUrl.startsWith("data:") && rawAudioUrl.length <= 2048
+      ? rawAudioUrl
+      : undefined
   const translatedText = typeof msg.translatedText === "string" ? msg.translatedText : undefined
   const targetLanguage = typeof msg.targetLanguage === "string" ? msg.targetLanguage : undefined
 
@@ -464,6 +470,7 @@ export async function POST(request: NextRequest) {
     const settingsJoinMode = body.joinMode
     const settingsPassword = body.password
     const targetUserId = body.targetUserId
+    const since = body.since
 
     if (typeof action !== "string" || action.trim().length === 0) {
       return NextResponse.json({ success: false, error: "Invalid action" }, { status: 400 })
@@ -872,6 +879,10 @@ export async function POST(request: NextRequest) {
 
       const rid = roomId.trim()
       const uid = typeof userId === "string" ? userId.trim() : ""
+      const sinceMs =
+        typeof since === "string" && since.trim().length > 0
+          ? Date.parse(since)
+          : Number.NaN
       
       // poll 频率限制检查
       if (!globalForRoomSettings.__voicelinkPollRateLimit) {
@@ -910,9 +921,12 @@ export async function POST(request: NextRequest) {
       if (uid) {
         const currentUser = users.find((u) => u.id === uid)
         if (currentUser) {
-          const nextUser: User = { ...currentUser, lastSeenAt: nowIso }
-          updates.push(store.joinRoom(rid, nextUser))
-          users = users.map((u) => (u.id === uid ? nextUser : u))
+          const lastSeenMs = parseLastSeenAt(currentUser.lastSeenAt)
+          if (!Number.isFinite(lastSeenMs) || nowMs - lastSeenMs >= USER_PRESENCE_HEARTBEAT_MS) {
+            const nextUser: User = { ...currentUser, lastSeenAt: nowIso }
+            updates.push(store.joinRoom(rid, nextUser))
+            users = users.map((u) => (u.id === uid ? nextUser : u))
+          }
         }
       }
 
@@ -938,9 +952,21 @@ export async function POST(request: NextRequest) {
 
       const settings = await getRoomSettings(settingsStore, roomId.trim()).catch(() => null)
       const signals = uid ? collectSignals(rid, uid) : []
+      const incrementalMessages = Array.isArray(roomData.messages)
+        ? roomData.messages.filter((msg) => {
+            if (!Number.isFinite(sinceMs)) return true
+            const ts = Date.parse(msg.timestamp)
+            if (Number.isFinite(ts)) return ts > sinceMs
+            return true
+          })
+        : []
       return NextResponse.json({
         success: true,
-        room: { ...roomData, users: activeUsers },
+        room: {
+          ...roomData,
+          users: activeUsers,
+          messages: incrementalMessages.slice(-POLL_MAX_MESSAGES),
+        },
         signals,
         settings: settings ? { adminUserId: settings.adminUserId, joinMode: settings.joinMode } : null,
       })
