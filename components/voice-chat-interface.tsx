@@ -110,6 +110,9 @@ type CallSignalPayload = {
   timestamp?: number
 }
 
+const LIVE_CAPTION_SEND_DEBOUNCE_MS = 350
+const LIVE_CAPTION_MAX_TEXT_LENGTH = 800
+
 type VoiceChatInterfaceProps = {
   initialRoomId?: string | null
   autoJoin?: boolean
@@ -227,6 +230,13 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
   const remoteTranslateAbortRef = useRef<AbortController | null>(null)
   const remoteTranslateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const liveCaptionSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastLiveCaptionSentRef = useRef<{
+    callId: string
+    toUserId: string
+    transcript: string
+    confirmedTranscript: string
+    translation: string
+  } | null>(null)
   const liveAutoBreakTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const liveCommittedTranscriptRef = useRef("")
   const liveCommittedTranslationRef = useRef("")
@@ -748,6 +758,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     setConfirmedTranscript("")
     liveCommittedTranscriptRef.current = ""
     liveCommittedTranslationRef.current = ""
+    lastLiveCaptionSentRef.current = null
     sessionTranscriptRef.current = ""
     lastVoiceIdRef.current = ""
     lastReceivedTextRef.current = ""
@@ -1137,6 +1148,13 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
     if (!left) return right
     if (left.endsWith(right)) return left
     return `${left} ${right}`.trim()
+  }, [])
+
+  const trimCaptionPayloadText = useCallback((value: string) => {
+    const text = typeof value === "string" ? value.trim() : ""
+    if (!text) return ""
+    if (text.length <= LIVE_CAPTION_MAX_TEXT_LENGTH) return text
+    return text.slice(-LIVE_CAPTION_MAX_TEXT_LENGTH).trimStart()
   }, [])
 
   const normalizeFinalText = useCallback((value: string) => {
@@ -1740,6 +1758,7 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
         setLiveTranslationLines([])
         liveCommittedTranscriptRef.current = ""
         liveCommittedTranslationRef.current = ""
+        lastLiveCaptionSentRef.current = null
         if (liveAutoBreakTimerRef.current) {
           clearTimeout(liveAutoBreakTimerRef.current)
           liveAutoBreakTimerRef.current = null
@@ -2587,28 +2606,56 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
       clearTimeout(liveCaptionSendTimerRef.current)
       liveCaptionSendTimerRef.current = null
     }
+
+    const nextTranscript = trimCaptionPayloadText(formattedLiveTranscript)
+    const nextConfirmedTranscript = trimCaptionPayloadText(formattedConfirmedTranscript)
+    const nextTranslation = trimCaptionPayloadText(formattedLiveTranslation)
+    const previous = lastLiveCaptionSentRef.current
+    if (
+      previous &&
+      previous.callId === callId &&
+      previous.toUserId === callPeer.id &&
+      previous.transcript === nextTranscript &&
+      previous.confirmedTranscript === nextConfirmedTranscript &&
+      previous.translation === nextTranslation
+    ) {
+      return
+    }
+
     liveCaptionSendTimerRef.current = setTimeout(() => {
-      void sendSignal(callPeer.id, {
+      const outgoingPayload = {
         type: "call_caption",
         callId,
         fromUserId: roomUserId,
         fromUserName: userName || t("call.unknownUser"),
         toUserId: callPeer.id,
-        transcript: formattedLiveTranscript,
-        confirmedTranscript: formattedConfirmedTranscript,
-        translation: formattedLiveTranslation,
+        transcript: nextTranscript,
+        confirmedTranscript: nextConfirmedTranscript,
+        translation: nextTranslation,
         sourceLanguage: outgoingSource,
         targetLanguage: targetLanguage.code,
         timestamp: Date.now(),
-      } as CallSignalPayload).catch(() => { })
-    }, 100)
+      } as CallSignalPayload
+      lastLiveCaptionSentRef.current = {
+        callId,
+        toUserId: callPeer.id,
+        transcript: nextTranscript,
+        confirmedTranscript: nextConfirmedTranscript,
+        translation: nextTranslation,
+      }
+      void sendSignal(callPeer.id, {
+        ...outgoingPayload,
+      } as CallSignalPayload).catch(() => {
+        lastLiveCaptionSentRef.current = null
+      })
+    }, LIVE_CAPTION_SEND_DEBOUNCE_MS)
     return () => {
       if (liveCaptionSendTimerRef.current) {
         clearTimeout(liveCaptionSendTimerRef.current)
         liveCaptionSendTimerRef.current = null
       }
     }
-  }, [callId, callLiveEnabled, callPeer?.id, callStatus, detectLanguageFromText, formattedLiveTranscript, formattedLiveTranslation, liveTranscript, roomUserId, sendSignal, sourceLanguage.code, t, targetLanguage.code, userName])
+  }, [callId, callLiveEnabled, callPeer?.id, callStatus, detectLanguageFromText, formattedConfirmedTranscript, formattedLiveTranscript, formattedLiveTranslation, liveTranscript, roomUserId, sendSignal, sourceLanguage.code, t, targetLanguage.code, trimCaptionPayloadText, userName])
 
   const sourceLanguageOptions = useMemo<Language[]>(() => {
     const autoLabel = locale === "zh" ? "自动识别" : "Auto Detect"
@@ -2922,8 +2969,14 @@ export function VoiceChatInterface({ initialRoomId, autoJoin = false }: VoiceCha
           return
         }
         if (response.status === 429) {
-          nextDelayMs = 5000 // Too Many Requests, slow down
-          console.warn("[Poll] 429 Too Many Requests, slowing down poll interval to 5s")
+          const throttleData = (await response.json().catch(() => null)) as { retryAfter?: unknown } | null
+          const retryAfterRaw = Number(throttleData?.retryAfter ?? Number.NaN)
+          if (Number.isFinite(retryAfterRaw) && retryAfterRaw > 0) {
+            nextDelayMs = Math.max(2000, Math.min(10000, Math.ceil(retryAfterRaw)))
+          } else {
+            nextDelayMs = 5000
+          }
+          console.warn("[Poll] 429 Too Many Requests, slowing down poll interval")
           return
         }
 

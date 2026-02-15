@@ -4,16 +4,28 @@ import type { Message, User } from "@/lib/store/types"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { Prisma } from "@prisma/client"
 import { getMariaPool, getPrisma } from "@/lib/prisma"
-import { roomsRateLimit } from "@/lib/rate-limit"
 import crypto from "node:crypto"
 
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000
-const USER_PRESENCE_TTL_MS = 60 * 1000
+const USER_PRESENCE_TTL_MS = 120 * 1000
 const USER_PRESENCE_HEARTBEAT_MS = 15 * 1000
 const SIGNAL_TTL_MS = 60 * 1000
 const SETTINGS_KEY = "rooms_auto_delete_after_24h"
 const ROOM_ACTIVITY_COLUMN = "last_activity_at"
 const ROOM_SETTINGS_PREFIX = "room:"
+const ACTION_RATE_WINDOW_MS = 60 * 1000
+const ACTION_RATE_LIMITS = {
+  poll: 120,
+  signal: 600,
+  join: 60,
+  leave: 60,
+  message: 60,
+  kick: 60,
+  update_language: 60,
+  update_user: 60,
+  update_settings: 60,
+  inspect: 120,
+} as const
 
 // poll 限流配置
 const POLL_RATE_LIMIT_MS = 2000  // poll 请求最小间隔2秒
@@ -34,6 +46,7 @@ const globalForRoomSettings = globalThis as unknown as {
   __voicelinkAppSettingsOpenid?: { value: boolean; fetchedAt: number }
   __voicelinkRoomSignals?: Map<string, Array<{ to: string; from: string; payload: unknown; createdAt: number }>>
   __voicelinkPollRateLimit?: Map<string, number>  // poll 限流缓存
+  __voicelinkActionRateLimit?: Map<string, { count: number; resetTime: number }>
 }
 
 if (!globalForRoomSettings.__voicelinkRoomSignals) {
@@ -45,8 +58,48 @@ function enqueueSignal(roomId: string, to: string, from: string, payload: unknow
   const list = map.get(roomId) ?? []
   const now = Date.now()
   const fresh = list.filter((s) => now - s.createdAt < SIGNAL_TTL_MS)
+
+  const payloadRecord = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : null
+  const payloadType = typeof payloadRecord?.type === "string" ? payloadRecord.type : ""
+  const payloadCallId = typeof payloadRecord?.callId === "string" ? payloadRecord.callId : ""
+
+  if (payloadType === "call_caption") {
+    const merged = fresh.filter((s) => {
+      if (s.to !== to || s.from !== from) return true
+      const queuedPayload =
+        typeof s.payload === "object" && s.payload !== null ? (s.payload as Record<string, unknown>) : null
+      const queuedType = typeof queuedPayload?.type === "string" ? queuedPayload.type : ""
+      const queuedCallId = typeof queuedPayload?.callId === "string" ? queuedPayload.callId : ""
+      if (queuedType !== "call_caption") return true
+      return queuedCallId !== payloadCallId
+    })
+    merged.push({ to, from, payload, createdAt: now })
+    map.set(roomId, merged)
+    return
+  }
+
   fresh.push({ to, from, payload, createdAt: now })
   map.set(roomId, fresh)
+}
+
+function consumeActionRateLimit(key: string, maxRequests: number, nowMs: number) {
+  if (!globalForRoomSettings.__voicelinkActionRateLimit) {
+    globalForRoomSettings.__voicelinkActionRateLimit = new Map()
+  }
+  const cache = globalForRoomSettings.__voicelinkActionRateLimit
+  const entry = cache.get(key)
+
+  if (!entry || nowMs > entry.resetTime) {
+    cache.set(key, { count: 1, resetTime: nowMs + ACTION_RATE_WINDOW_MS })
+    return { ok: true as const, retryAfterMs: 0 }
+  }
+
+  if (entry.count >= maxRequests) {
+    return { ok: false as const, retryAfterMs: Math.max(1, entry.resetTime - nowMs) }
+  }
+
+  entry.count += 1
+  return { ok: true as const, retryAfterMs: 0 }
 }
 
 function collectSignals(roomId: string, userId: string): unknown[] {
@@ -444,12 +497,6 @@ function parseMessage(value: unknown): Message | null {
 }
 
 export async function POST(request: NextRequest) {
-  // 应用限流
-  const rateLimitCheck = await roomsRateLimit()(request)
-  if (rateLimitCheck) {
-    return rateLimitCheck
-  }
-
   try {
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null
     if (!body) {
@@ -474,6 +521,40 @@ export async function POST(request: NextRequest) {
 
     if (typeof action !== "string" || action.trim().length === 0) {
       return NextResponse.json({ success: false, error: "Invalid action" }, { status: 400 })
+    }
+
+    const actionName = action.trim()
+    const nowMs = Date.now()
+    const ip =
+      request.headers.get("x-forwarded-for") ||
+      request.headers.get("x-real-ip") ||
+      "unknown"
+    const roomIdKey = typeof roomId === "string" ? roomId.trim() : ""
+    const userIdKey = typeof userId === "string" ? userId.trim() : ""
+    const limit = ACTION_RATE_LIMITS[actionName as keyof typeof ACTION_RATE_LIMITS] ?? 60
+    const limitKey =
+      actionName === "poll" || actionName === "signal"
+        ? `rooms:${actionName}:${roomIdKey || "no-room"}:${userIdKey || ip}`
+        : `rooms:${actionName}:${ip}`
+    const limitResult = consumeActionRateLimit(limitKey, limit, nowMs)
+    if (!limitResult.ok) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Too many requests",
+          action: actionName,
+          retryAfter: limitResult.retryAfterMs,
+        },
+        {
+          status: 429,
+          headers: {
+            "X-RateLimit-Limit": String(limit),
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Action": actionName,
+            "Retry-After": String(Math.ceil(limitResult.retryAfterMs / 1000)),
+          },
+        },
+      )
     }
 
     let store = getRoomStore()
@@ -868,7 +949,17 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: "Room not found" }, { status: 404 })
       }
 
-      enqueueSignal(roomId.trim(), toUserId, userId.trim(), payload)
+      const senderId = userId.trim()
+      const sender = room.users.find((u) => u.id === senderId)
+      if (sender) {
+        const nowIso = new Date().toISOString()
+        const lastSeenMs = parseLastSeenAt(sender.lastSeenAt)
+        if (!Number.isFinite(lastSeenMs) || Date.now() - lastSeenMs >= USER_PRESENCE_HEARTBEAT_MS) {
+          void store.joinRoom(roomId.trim(), { ...sender, lastSeenAt: nowIso }).catch(() => null)
+        }
+      }
+
+      enqueueSignal(roomId.trim(), toUserId, senderId, payload)
       return NextResponse.json({ success: true })
     }
 
